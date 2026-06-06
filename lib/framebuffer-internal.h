@@ -27,7 +27,12 @@ namespace rgb_matrix {
 class GPIO;
 class PinPulser;
 namespace internal {
-class RowAddressSetter;
+class RowAddressSetter {
+public:
+  virtual ~RowAddressSetter() {}
+  virtual gpio_bits_t need_bits() const = 0;
+  virtual void SetRowAddress(GPIO *io, int row) = 0;
+};
 
 // An opaque type used within the framebuffer that can be used
 // to copy between PixelMappers.
@@ -88,17 +93,22 @@ public:
   Framebuffer(int rows, int columns, int parallel,
               int scan_mode,
               const char* led_sequence, bool inverse_color,
+              bool allow_large_spwm_rows,
               PixelDesignatorMap **mapper);
   ~Framebuffer();
 
   // Initialize GPIO bits for output. Only call once.
   static void InitHardwareMapping(const char *named_hardware);
   static void InitGPIO(GPIO *io, int rows, int parallel,
+                       const char *panel_type,
                        bool allow_hardware_pulsing,
                        int pwm_lsb_nanoseconds,
                        int dither_bits,
-                       int row_address_type);
-  static void InitializePanels(GPIO *io, const char *panel_type, int columns);
+                       int row_address_type,
+                       int spwm_row_address_type);
+  static void InitializePanels(GPIO *io, const char *panel_type, int columns,
+                               int spwm_row_address_type,
+                               int spwm_scan_rows);
   // Reset internal static globals so InitGPIO() can re-run with new params.
   static void ResetGlobals();
 
@@ -120,6 +130,7 @@ public:
   uint8_t brightness() { return brightness_; }
 
   void DumpToMatrix(GPIO *io, int pwm_bits_to_show);
+  void DumpToMatrixSPWM(GPIO *io, int pwm_low_bit);
 
   void Serialize(const char **data, size_t *len) const;
   bool Deserialize(const char *data, size_t len);
@@ -161,10 +172,10 @@ private:
                              PixelDesignator *designator);
   inline void  MapColors(uint8_t r, uint8_t g, uint8_t b,
                          uint16_t *red, uint16_t *green, uint16_t *blue);
-  const int rows_;     // Number of rows. 16 or 32.
+  const int rows_;     // Number of physical rows in one panel.
   const int parallel_; // Parallel rows of chains. 1 or 2.
   const int height_;   // rows * parallel
-  const int columns_;  // Number of columns. Number of chained boards * 32.
+  const int columns_;  // Total physical columns across the chained panels.
 
   const int scan_mode_;
   const bool inverse_color_;

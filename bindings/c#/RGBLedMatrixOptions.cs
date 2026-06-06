@@ -76,6 +76,18 @@ public struct RGBLedMatrixOptions
     public int RowAddressType = 0;
 
     /// <summary>
+    /// SPWM-only row-address override. 0 keeps direct A-E row addressing for
+    /// SPWM panels, 1 selects the shift-register blank-clock A/C row-select
+    /// path, and 2 selects the A+B path with wrap-C row select.
+    /// </summary>
+    public int SpwmRowAddressType = 0;
+
+    /// <summary>
+    /// Optional SPWM scan-row override. 0 keeps the panel default.
+    /// </summary>
+    public int SpwmScanRows = 0;
+
+    /// <summary>
     /// Type of multiplexing.
     /// </summary>
     public Multiplexing Multiplexing = Multiplexing.Direct;
@@ -105,6 +117,7 @@ public struct RGBLedMatrixOptions
     public bool DisableHardwarePulsing = false;
     public bool ShowRefreshRate = false;
     public bool InverseColors = false;
+    public bool DisableBusyWaiting = false;
 
     /// <summary>
     /// Limit refresh rate of LED panel. This will help on a loaded system
@@ -118,10 +131,10 @@ public struct RGBLedMatrixOptions
     public int GpioSlowdown = 1;
 
     /// <summary>
-    /// On Raspberry Pi 5-family boards, choose the experimental RP1 RIO backend instead of
-    /// the default RP1 PIO backend. 0 = PIO, 1 = RIO.
+    /// On Raspberry Pi 5-family boards, force the RP1 PIO backend.
+    /// 0 = default RP1 RIO, 1 = PIO.
     /// </summary>
-    public int Rp1Rio = 0;
+    public int Rp1Pio = 0;
 
     /// <summary>
     /// Creates default matrix settings.

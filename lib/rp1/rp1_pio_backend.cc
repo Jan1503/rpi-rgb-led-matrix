@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -38,7 +39,7 @@ namespace {
 //   describes which GPIO levels to present and how long each bitplane stays on.
 
 static const uint32_t kPioOutputPinCount = 28;
-static const uint32_t kMaxTransferBytes = 65532;
+static const uint32_t kMaxTransferBytes = 2 * 1024 * 1024;
 // Command words use bit 31 as a tag:
 //   1 = "the next N words are GPIO samples to clock out"
 //   0 = "hold this GPIO sample for N encoded delay cycles"
@@ -112,11 +113,11 @@ static bool MappingNameSupported(const char *hardware_mapping) {
   }
   // Keep this intentionally narrower than the generic library mapping list.
   // The PIO backend assumes one clock side-set pin and RP1 GPIOs 0..27 only.
-  return strcmp(hardware_mapping, "regular") == 0
-      || strcmp(hardware_mapping, "regular-pi1") == 0
-      || strcmp(hardware_mapping, "classic") == 0
-      || strcmp(hardware_mapping, "adafruit-hat") == 0
-      || strcmp(hardware_mapping, "adafruit-hat-pwm") == 0;
+  return strcasecmp(hardware_mapping, "regular") == 0
+      || strcasecmp(hardware_mapping, "regular-pi1") == 0
+      || strcasecmp(hardware_mapping, "classic") == 0
+      || strcasecmp(hardware_mapping, "adafruit-hat") == 0
+      || strcasecmp(hardware_mapping, "adafruit-hat-pwm") == 0;
 }
 
 static uint32_t CollectColorMask(const HardwareMapping &h, int parallel) {
@@ -151,8 +152,20 @@ static uint32_t CollectAddressMask(const HardwareMapping &h, int double_rows,
     if (double_rows > 16) mask |= h.e;
     return mask;
   }
+  case 1:
+    return h.a | h.b;
   case 2:
     return h.a | h.b | h.c | h.d;
+  case 3:
+    return h.a | h.c;
+  case 4: {
+    uint32_t mask = h.a | h.b | h.c;
+    if (double_rows > 8) mask |= h.d;
+    if (double_rows > 16) mask |= h.e;
+    return mask;
+  }
+  case 5:
+    return h.a | h.b | h.c;
   default:
     return 0;
   }
@@ -175,6 +188,38 @@ static bool IsSingleBit(uint64_t bits) {
   return bits != 0 && (bits & (bits - 1)) == 0;
 }
 
+static bool Rp1UsesShiftRegisterRowAddress(int row_address_type) {
+  return row_address_type == 1 || row_address_type == 3
+      || row_address_type == 4 || row_address_type == 5;
+}
+
+static bool Rp1ShiftsRowAddressEveryBitplane(int row_address_type) {
+  // The legacy ABC row-address setter does not cache last_row_; keep that
+  // timing for row-address type 3 while the other shift-register types update
+  // once per display row.
+  return row_address_type == 3;
+}
+
+static uint32_t Rp1ShiftRegisterIdleBits(const HardwareMapping &h, int row) {
+  return h.a | (row == 0 ? 0 : h.b);
+}
+
+static uint32_t Rp1AbcShiftRegisterIdleBits(const HardwareMapping &h, int row) {
+  return row == 0 ? h.c : 0;
+}
+
+static uint32_t Rp1Sm5266DirectAddressBits(const HardwareMapping &h, int row) {
+  uint32_t bits = 0;
+  if (row & 0x08) bits |= h.d;
+  if (row & 0x10) bits |= h.e;
+  return bits;
+}
+
+static uint32_t Rp1B707ShiftRegisterIdleBits(const HardwareMapping &h,
+                                             int row) {
+  return row == 0 ? h.c : 0;
+}
+
 static uint32_t CalcRowAddressBits(const HardwareMapping &h,
                                    int row_address_type, int row) {
   switch (row_address_type) {
@@ -187,6 +232,8 @@ static uint32_t CalcRowAddressBits(const HardwareMapping &h,
     if (row & 0x10) bits |= h.e;
     return bits;
   }
+  case 1:
+    return Rp1ShiftRegisterIdleBits(h, row);
   case 2:
     switch (row & 0x03) {
     case 0: return h.b | h.c | h.d;
@@ -194,6 +241,12 @@ static uint32_t CalcRowAddressBits(const HardwareMapping &h,
     case 2: return h.a | h.b | h.d;
     default: return h.a | h.b | h.c;
     }
+  case 3:
+    return Rp1AbcShiftRegisterIdleBits(h, row);
+  case 4:
+    return Rp1Sm5266DirectAddressBits(h, row);
+  case 5:
+    return Rp1B707ShiftRegisterIdleBits(h, row);
   default:
     return 0;
   }
@@ -220,10 +273,102 @@ static void AppendDataHeader(std::vector<uint32_t> *buffer, int words) {
   buffer->push_back(kCommandData | static_cast<uint32_t>(words - 1));
 }
 
+static void Rp1PioAppendShiftRegisterRowAddress(
+    std::vector<uint32_t> *buffer, const HardwareMapping &h, int double_rows,
+    int row, uint32_t blank) {
+  const uint32_t clock = h.a;
+  const uint32_t data = h.b;
+  uint32_t row_bits = 0;
+
+  for (int activate = 0; activate < double_rows; ++activate) {
+    AppendDelay(buffer, blank, 0);
+
+    row_bits = (activate == double_rows - 1 - row) ? 0 : data;
+    AppendDelay(buffer, blank | row_bits, 0);
+    AppendDelay(buffer, blank | row_bits | clock, 0);
+  }
+
+  AppendDelay(buffer, blank | row_bits, 0);
+  AppendDelay(buffer, blank | row_bits | clock, 0);
+}
+
+static void Rp1PioAppendAbcShiftRegisterRowAddress(
+    std::vector<uint32_t> *buffer, const HardwareMapping &h, int double_rows,
+    int row, uint32_t blank) {
+  const uint32_t clock = h.a;
+  const uint32_t data = h.c;
+  uint32_t row_bits = 0;
+
+  for (int activate = 0; activate < double_rows; ++activate) {
+    AppendDelay(buffer, blank, 0);
+
+    row_bits = (activate == double_rows - 1 - row) ? data : 0;
+    AppendDelay(buffer, blank | row_bits, 0);
+    AppendDelay(buffer, blank | row_bits | clock, 0);
+  }
+
+  AppendDelay(buffer, blank | row_bits, 0);
+}
+
+static void Rp1PioAppendSm5266RowAddress(
+    std::vector<uint32_t> *buffer, const HardwareMapping &h, int row,
+    uint32_t blank) {
+  const uint32_t clock = h.a;
+  const uint32_t data = h.b;
+  const uint32_t enable = h.c;
+
+  AppendDelay(buffer, blank | enable, 0);
+  for (int r = 7; r >= 0; --r) {
+    const uint32_t row_bits = ((row % 8) == r) ? data : 0;
+    AppendDelay(buffer, blank | enable | row_bits, 0);
+    AppendDelay(buffer, blank | enable | row_bits | clock, 0);
+    AppendDelay(buffer, blank | enable | row_bits | clock, 0);
+    AppendDelay(buffer, blank | enable | row_bits, 0);
+  }
+
+  AppendDelay(buffer, blank | Rp1Sm5266DirectAddressBits(h, row),
+              kPostAddressDelayClocks);
+}
+
+static void Rp1PioAppendB707ShiftRegisterRowAddress(
+    std::vector<uint32_t> *buffer, const HardwareMapping &h, int row,
+    uint32_t blank) {
+  const uint32_t clock = h.a;
+  const uint32_t enable = h.b;
+  const uint32_t row_bits = Rp1B707ShiftRegisterIdleBits(h, row);
+
+  AppendDelay(buffer, blank | enable, 0);
+  AppendDelay(buffer, blank | enable | row_bits, 0);
+  AppendDelay(buffer, blank | enable | row_bits | clock, 0);
+  AppendDelay(buffer, blank | enable | row_bits | clock, 0);
+  AppendDelay(buffer, blank | row_bits, 0);
+}
+
+static void Rp1PioAppendRowAddress(
+    std::vector<uint32_t> *buffer, const HardwareMapping &h, int double_rows,
+    int row_address_type, int row, uint32_t blank) {
+  switch (row_address_type) {
+  case 1:
+    Rp1PioAppendShiftRegisterRowAddress(buffer, h, double_rows, row, blank);
+    break;
+  case 3:
+    Rp1PioAppendAbcShiftRegisterRowAddress(buffer, h, double_rows, row, blank);
+    break;
+  case 4:
+    Rp1PioAppendSm5266RowAddress(buffer, h, row, blank);
+    break;
+  case 5:
+    Rp1PioAppendB707ShiftRegisterRowAddress(buffer, h, row, blank);
+    break;
+  default:
+    break;
+  }
+}
+
 static int TransferLarge(PIO pio, int sm, const uint32_t *data,
                          size_t data_bytes) {
-  // The userspace piolib transfer helper caps one request below 64 KiB, so
-  // large frame updates are streamed in chunks.
+  // Keep normal frames in one transfer. Very large frame updates are still
+  // streamed in chunks.
   while (data_bytes > 0) {
     const size_t chunk = std::min(data_bytes,
                                   static_cast<size_t>(kMaxTransferBytes));
@@ -435,7 +580,7 @@ bool Rp1PioConfigSupported(const char *hardware_mapping, int row_address_type,
                            int parallel) {
   if (!Rp1PioPlatformDetected()) return false;
   if (!MappingNameSupported(hardware_mapping)) return false;
-  if (!(row_address_type == 0 || row_address_type == 2)) return false;
+  if (!(row_address_type >= 0 && row_address_type <= 5)) return false;
   return parallel >= 1 && parallel <= 3;
 }
 
@@ -520,6 +665,10 @@ void Rp1PioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
   const int double_rows = framebuffer->double_rows();
   const int columns = framebuffer->columns();
   const int scan_mode = framebuffer->scan_mode();
+  const bool uses_shift_register =
+      Rp1UsesShiftRegisterRowAddress(state.row_address_type);
+  const bool shifts_every_bitplane =
+      Rp1ShiftsRowAddressEveryBitplane(state.row_address_type);
 
   const int plane_count = Framebuffer::kBitPlanes - start_bit;
   state.transfer_buffer.clear();
@@ -530,6 +679,7 @@ void Rp1PioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
       h, state.row_address_type,
       DisplayRowFromLoop(double_rows - 1, double_rows, scan_mode));
   int previous_active_words = 0;
+  int last_shift_register_row = -1;
 
   for (int row_loop = 0; row_loop < double_rows; ++row_loop) {
     const int display_row =
@@ -556,7 +706,14 @@ void Rp1PioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
                     remaining_overlap_words * kClocksPerDataWord);
       }
 
-      if (current_addr != previous_addr) {
+      if (uses_shift_register) {
+        if (shifts_every_bitplane || display_row != last_shift_register_row) {
+          Rp1PioAppendRowAddress(&state.transfer_buffer, h, double_rows,
+                                 state.row_address_type, display_row,
+                                 state.output_enable_bit);
+          last_shift_register_row = display_row;
+        }
+      } else if (current_addr != previous_addr) {
         AppendDelay(&state.transfer_buffer,
                     current_addr | state.output_enable_bit,
                     kPostAddressDelayClocks);

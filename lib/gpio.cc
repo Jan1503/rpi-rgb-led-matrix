@@ -17,6 +17,7 @@
 #include <inttypes.h>
 
 #include "gpio.h"
+#include "rp1/rp1_spwm_gpio.h"
 
 #include <assert.h>
 #include <fcntl.h>
@@ -144,7 +145,11 @@ static bool LinuxHasModuleLoaded(const char *name) {
 #define GPIO_BIT(x) (1ull << x)
 
 GPIO::GPIO() : output_bits_(0), input_bits_(0), reserved_bits_(0),
-               slowdown_(1)
+               slowdown_(1), uses_rp1_spwm_rio_(false),
+               rp1_spwm_rio_write_state_(0),
+               rp1_spwm_rio_write_bits_(NULL),
+               gpio_set_bits_low_(NULL), gpio_clr_bits_low_(NULL),
+               gpio_read_bits_low_(NULL)
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
              , uses_64_bit_(false)
 #endif
@@ -153,8 +158,12 @@ GPIO::GPIO() : output_bits_(0), input_bits_(0), reserved_bits_(0),
 
 gpio_bits_t GPIO::InitOutputs(gpio_bits_t outputs,
                               bool adafruit_pwm_transition_hack_needed) {
-  if (s_GPIO_registers == NULL) {
+  if (!uses_rp1_spwm_rio_ && s_GPIO_registers == NULL) {
     fprintf(stderr, "Attempt to init outputs but not yet Init()-ialized.\n");
+    return 0;
+  }
+  if (uses_rp1_spwm_rio_ && !internal::Rp1SpwmGpioIsInitialized()) {
+    fprintf(stderr, "Attempt to init RP1 RIO outputs but not yet Init()-ialized.\n");
     return 0;
   }
 
@@ -168,8 +177,10 @@ gpio_bits_t GPIO::InitOutputs(gpio_bits_t outputs,
   // can switch between the two modes "adafruit-hat" and "adafruit-hat-pwm"
   // without trouble.
   if (adafruit_pwm_transition_hack_needed) {
-    INP_GPIO(4);
-    INP_GPIO(18);
+    if (!uses_rp1_spwm_rio_) {
+      INP_GPIO(4);
+      INP_GPIO(18);
+    }
     // Even with PWM enabled, GPIO4 still can not be used, because it is
     // now connected to the GPIO18 and thus must stay an input.
     // So reserve this bit if it is not set in outputs.
@@ -185,6 +196,13 @@ gpio_bits_t GPIO::InitOutputs(gpio_bits_t outputs,
     fprintf(stderr, "This Raspberry Pi has the one-wire protocol enabled.\n"
             "This will mess with the display if GPIO pins overlap.\n"
             "Disable 1-wire in raspi-config (Interface Options).\n\n");
+  }
+
+  if (uses_rp1_spwm_rio_) {
+    const gpio_bits_t result = internal::Rp1SpwmGpioInitOutputs(
+        outputs, adafruit_pwm_transition_hack_needed);
+    output_bits_ |= result;
+    return result;
   }
 
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
@@ -213,12 +231,21 @@ void GPIO::ResetState() {
 }
 
 gpio_bits_t GPIO::RequestInputs(gpio_bits_t inputs) {
-  if (s_GPIO_registers == NULL) {
+  if (!uses_rp1_spwm_rio_ && s_GPIO_registers == NULL) {
     fprintf(stderr, "Attempt to init inputs but not yet Init()-ialized.\n");
+    return 0;
+  }
+  if (uses_rp1_spwm_rio_ && !internal::Rp1SpwmGpioIsInitialized()) {
+    fprintf(stderr, "Attempt to init RP1 RIO inputs but not yet Init()-ialized.\n");
     return 0;
   }
 
   inputs &= ~(output_bits_ | input_bits_ | reserved_bits_);
+  if (uses_rp1_spwm_rio_) {
+    const gpio_bits_t result = internal::Rp1SpwmGpioRequestInputs(inputs);
+    input_bits_ |= result;
+    return result;
+  }
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
   const int kMaxAvailableBit = 45;
   uses_64_bit_ |= (inputs >> 32) != 0;
@@ -428,6 +455,28 @@ static bool mmap_all_bcm_registers_once() {
 bool GPIO::Init(int slowdown) {
   slowdown_ = slowdown;
 
+  if (GetPiModel() == PI_MODEL_5) {
+    // On RP1 boards this generic GPIO path is used only by SPWM; non-SPWM
+    // refresh uses the dedicated RP1 backends.
+    internal::Rp1SpwmGpioRegisters rp1_registers;
+    if (!internal::Rp1SpwmGpioInit(&rp1_registers)) {
+      return false;
+    }
+
+    uses_rp1_spwm_rio_ = true;
+    rp1_spwm_rio_write_bits_ = rp1_registers.write_bits;
+    gpio_set_bits_low_ = rp1_registers.set_bits;
+    gpio_clr_bits_low_ = rp1_registers.clear_bits;
+    gpio_read_bits_low_ = rp1_registers.read_bits;
+    rp1_spwm_rio_write_state_ =
+        rp1_spwm_rio_write_bits_ != NULL
+            ? *rp1_spwm_rio_write_bits_
+            : 0;
+    return true;
+  }
+
+  uses_rp1_spwm_rio_ = false;
+  rp1_spwm_rio_write_bits_ = NULL;
   // Pre-mmap all bcm registers we need now and possibly in the future, as to
   // allow  dropping privileges after GPIO::Init() even as some of these
   // registers might be needed later.

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -80,7 +81,10 @@ struct Rp1RioState {
         clock_bit(0),
         latch_bit(0),
         used_mask(0),
-        word_time_nanos(0.0) {
+        word_time_nanos(0.0),
+        has_pending_active_words(false),
+        pending_addr(0),
+        pending_active_words(0) {
   }
 
   bool active;
@@ -102,6 +106,9 @@ struct Rp1RioState {
   uint32_t latch_bit;
   uint32_t used_mask;
   double word_time_nanos;
+  bool has_pending_active_words;
+  uint32_t pending_addr;
+  int pending_active_words;
   std::vector<int> bitplane_active_words;
 };
 
@@ -177,10 +184,10 @@ static bool MappingNameSupported(const char *hardware_mapping) {
   }
   // This list reflects the mappings we have validated against the RP1 0..27
   // GPIO range and the one-bit-per-signal constraints below.
-  return strcmp(hardware_mapping, "regular") == 0
-      || strcmp(hardware_mapping, "classic") == 0
-      || strcmp(hardware_mapping, "adafruit-hat") == 0
-      || strcmp(hardware_mapping, "adafruit-hat-pwm") == 0;
+  return strcasecmp(hardware_mapping, "regular") == 0
+      || strcasecmp(hardware_mapping, "classic") == 0
+      || strcasecmp(hardware_mapping, "adafruit-hat") == 0
+      || strcasecmp(hardware_mapping, "adafruit-hat-pwm") == 0;
 }
 
 static uint32_t CollectColorMask(const HardwareMapping &h, int parallel) {
@@ -206,8 +213,20 @@ static uint32_t CollectAddressMask(const HardwareMapping &h, int double_rows,
     if (double_rows > 16) mask |= h.e;
     return mask;
   }
+  case 1:
+    return h.a | h.b;
   case 2:
     return h.a | h.b | h.c | h.d;
+  case 3:
+    return h.a | h.c;
+  case 4: {
+    uint32_t mask = h.a | h.b | h.c;
+    if (double_rows > 8) mask |= h.d;
+    if (double_rows > 16) mask |= h.e;
+    return mask;
+  }
+  case 5:
+    return h.a | h.b | h.c;
   default:
     return 0;
   }
@@ -287,6 +306,11 @@ static bool ValidateMappingSignals(const HardwareMapping &h, int double_rows,
     if (double_rows > 4 && !ValidatePinBits("address C", h.c)) return false;
     if (double_rows > 8 && !ValidatePinBits("address D", h.d)) return false;
     if (double_rows > 16 && !ValidatePinBits("address E", h.e)) return false;
+  } else if (row_address_type == 1) {
+    if (!ValidatePinBits("address A", h.a)
+        || !ValidatePinBits("address B", h.b)) {
+      return false;
+    }
   } else if (row_address_type == 2) {
     if (!ValidatePinBits("address A", h.a)
         || !ValidatePinBits("address B", h.b)
@@ -294,8 +318,59 @@ static bool ValidateMappingSignals(const HardwareMapping &h, int double_rows,
         || !ValidatePinBits("address D", h.d)) {
       return false;
     }
+  } else if (row_address_type == 3) {
+    if (!ValidatePinBits("address A", h.a)
+        || !ValidatePinBits("address C", h.c)) {
+      return false;
+    }
+  } else if (row_address_type == 4) {
+    if (!ValidatePinBits("address A", h.a)
+        || !ValidatePinBits("address B", h.b)
+        || !ValidatePinBits("address C", h.c)) {
+      return false;
+    }
+    if (double_rows > 8 && !ValidatePinBits("address D", h.d)) return false;
+    if (double_rows > 16 && !ValidatePinBits("address E", h.e)) return false;
+  } else if (row_address_type == 5) {
+    if (!ValidatePinBits("address A", h.a)
+        || !ValidatePinBits("address B", h.b)
+        || !ValidatePinBits("address C", h.c)) {
+      return false;
+    }
   }
   return true;
+}
+
+static bool Rp1UsesShiftRegisterRowAddress(int row_address_type) {
+  return row_address_type == 1 || row_address_type == 3
+      || row_address_type == 4 || row_address_type == 5;
+}
+
+static bool Rp1ShiftsRowAddressEveryBitplane(int row_address_type) {
+  // The legacy ABC row-address setter does not cache last_row_; keep that
+  // timing for row-address type 3 while the other shift-register types update
+  // once per display row.
+  return row_address_type == 3;
+}
+
+static uint32_t Rp1ShiftRegisterIdleBits(const HardwareMapping &h, int row) {
+  return h.a | (row == 0 ? 0 : h.b);
+}
+
+static uint32_t Rp1AbcShiftRegisterIdleBits(const HardwareMapping &h, int row) {
+  return row == 0 ? h.c : 0;
+}
+
+static uint32_t Rp1Sm5266DirectAddressBits(const HardwareMapping &h, int row) {
+  uint32_t bits = 0;
+  if (row & 0x08) bits |= h.d;
+  if (row & 0x10) bits |= h.e;
+  return bits;
+}
+
+static uint32_t Rp1B707ShiftRegisterIdleBits(const HardwareMapping &h,
+                                             int row) {
+  return row == 0 ? h.c : 0;
 }
 
 static uint32_t CalcRowAddressBits(const HardwareMapping &h,
@@ -310,6 +385,8 @@ static uint32_t CalcRowAddressBits(const HardwareMapping &h,
     if (row & 0x10) bits |= h.e;
     return bits;
   }
+  case 1:
+    return Rp1ShiftRegisterIdleBits(h, row);
   case 2:
     switch (row & 0x03) {
     case 0: return h.b | h.c | h.d;
@@ -317,6 +394,12 @@ static uint32_t CalcRowAddressBits(const HardwareMapping &h,
     case 2: return h.a | h.b | h.d;
     default: return h.a | h.b | h.c;
     }
+  case 3:
+    return Rp1AbcShiftRegisterIdleBits(h, row);
+  case 4:
+    return Rp1Sm5266DirectAddressBits(h, row);
+  case 5:
+    return Rp1B707ShiftRegisterIdleBits(h, row);
   default:
     return 0;
   }
@@ -428,6 +511,120 @@ static void SendRawWordsBlanked(const std::vector<uint32_t> &pins) {
   s_rio_state.rio_out->Out = s_rio_state.output_enable_bit;
 }
 
+static void Rp1RioShiftRegisterRowAddress(const HardwareMapping &h,
+                                          int double_rows, int row) {
+  Rp1RioState &state = s_rio_state;
+  const uint32_t blank = state.output_enable_bit;
+  const uint32_t clock = h.a;
+  const uint32_t data = h.b;
+  uint32_t row_bits = 0;
+
+  for (int activate = 0; activate < double_rows; ++activate) {
+    state.rio_out->Out = blank;
+    ClockSetupDelay(state.gpio_slowdown);
+
+    row_bits = (activate == double_rows - 1 - row) ? 0 : data;
+    state.rio_out->Out = blank | row_bits;
+    ClockSetupDelay(state.gpio_slowdown);
+
+    state.rio_out->Out = blank | row_bits | clock;
+    ClockSetupDelay(state.gpio_slowdown);
+  }
+
+  state.rio_out->Out = blank | row_bits;
+  ClockSetupDelay(state.gpio_slowdown);
+  state.rio_out->Out = blank | row_bits | clock;
+  ClockSetupDelay(state.gpio_slowdown);
+}
+
+static void Rp1RioShiftAbcRowAddress(const HardwareMapping &h, int double_rows,
+                                     int row) {
+  Rp1RioState &state = s_rio_state;
+  const uint32_t blank = state.output_enable_bit;
+  const uint32_t clock = h.a;
+  const uint32_t data = h.c;
+  uint32_t row_bits = 0;
+
+  for (int activate = 0; activate < double_rows; ++activate) {
+    state.rio_out->Out = blank;
+    ClockSetupDelay(state.gpio_slowdown);
+
+    row_bits = (activate == double_rows - 1 - row) ? data : 0;
+    state.rio_out->Out = blank | row_bits;
+    ClockSetupDelay(state.gpio_slowdown);
+
+    state.rio_out->Out = blank | row_bits | clock;
+    ClockSetupDelay(state.gpio_slowdown);
+  }
+
+  state.rio_out->Out = blank | row_bits;
+  ClockSetupDelay(state.gpio_slowdown);
+}
+
+static void Rp1RioShiftSm5266RowAddress(const HardwareMapping &h, int row) {
+  Rp1RioState &state = s_rio_state;
+  const uint32_t blank = state.output_enable_bit;
+  const uint32_t clock = h.a;
+  const uint32_t data = h.b;
+  const uint32_t enable = h.c;
+
+  state.rio_out->Out = blank | enable;
+  ClockSetupDelay(state.gpio_slowdown);
+  for (int r = 7; r >= 0; --r) {
+    const uint32_t row_bits = ((row % 8) == r) ? data : 0;
+    state.rio_out->Out = blank | enable | row_bits;
+    ClockSetupDelay(state.gpio_slowdown);
+    state.rio_out->Out = blank | enable | row_bits | clock;
+    ClockSetupDelay(state.gpio_slowdown);
+    state.rio_out->Out = blank | enable | row_bits | clock;
+    ClockSetupDelay(state.gpio_slowdown);
+    state.rio_out->Out = blank | enable | row_bits;
+    ClockSetupDelay(state.gpio_slowdown);
+  }
+
+  state.rio_out->Out = blank | Rp1Sm5266DirectAddressBits(h, row);
+  ClockSetupDelay(state.gpio_slowdown);
+}
+
+static void Rp1RioShiftB707RowAddress(const HardwareMapping &h, int row) {
+  Rp1RioState &state = s_rio_state;
+  const uint32_t blank = state.output_enable_bit;
+  const uint32_t clock = h.a;
+  const uint32_t enable = h.b;
+  const uint32_t row_bits = Rp1B707ShiftRegisterIdleBits(h, row);
+
+  state.rio_out->Out = blank | enable;
+  ClockSetupDelay(state.gpio_slowdown);
+  state.rio_out->Out = blank | enable | row_bits;
+  ClockSetupDelay(state.gpio_slowdown);
+  state.rio_out->Out = blank | enable | row_bits | clock;
+  ClockSetupDelay(state.gpio_slowdown);
+  state.rio_out->Out = blank | enable | row_bits | clock;
+  ClockSetupDelay(state.gpio_slowdown);
+  state.rio_out->Out = blank | row_bits;
+  ClockSetupDelay(state.gpio_slowdown);
+}
+
+static void Rp1RioShiftRowAddress(const HardwareMapping &h, int double_rows,
+                                  int row_address_type, int row) {
+  switch (row_address_type) {
+  case 1:
+    Rp1RioShiftRegisterRowAddress(h, double_rows, row);
+    break;
+  case 3:
+    Rp1RioShiftAbcRowAddress(h, double_rows, row);
+    break;
+  case 4:
+    Rp1RioShiftSm5266RowAddress(h, row);
+    break;
+  case 5:
+    Rp1RioShiftB707RowAddress(h, row);
+    break;
+  default:
+    break;
+  }
+}
+
 static void SendFM6126Init(const HardwareMapping &h, int columns) {
   const uint32_t bits_on = CollectColorMask(h, s_rio_state.parallel)
                            | static_cast<uint32_t>(h.a);
@@ -504,7 +701,7 @@ bool Rp1RioShouldActivate(const char *hardware_mapping, int row_address_type,
   if (!s_rio_requested) return false;
   if (!Rp1RioPlatformDetected()) return false;
   if (!MappingNameSupported(hardware_mapping)) return false;
-  if (!(row_address_type == 0 || row_address_type == 2)) return false;
+  if (!(row_address_type >= 0 && row_address_type <= 5)) return false;
   return parallel >= 1 && parallel <= 3;
 }
 
@@ -588,11 +785,22 @@ void Rp1RioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
   const int double_rows = framebuffer->double_rows();
   const int columns = framebuffer->columns();
   const int scan_mode = framebuffer->scan_mode();
+  const bool uses_shift_register =
+      Rp1UsesShiftRegisterRowAddress(state.row_address_type);
+  const bool shifts_every_bitplane =
+      Rp1ShiftsRowAddressEveryBitplane(state.row_address_type);
 
-  uint32_t previous_addr = CalcRowAddressBits(
-      h, state.row_address_type,
-      DisplayRowFromLoop(double_rows - 1, double_rows, scan_mode));
-  int previous_active_words = 0;
+  uint32_t previous_addr = state.has_pending_active_words
+                               ? state.pending_addr
+                               : CalcRowAddressBits(
+                                     h, state.row_address_type,
+                                     DisplayRowFromLoop(double_rows - 1,
+                                                        double_rows,
+                                                        scan_mode));
+  int previous_active_words = state.has_pending_active_words
+                                  ? state.pending_active_words
+                                  : 0;
+  int last_shift_register_row = -1;
 
   for (int row_loop = 0; row_loop < double_rows; ++row_loop) {
     const int display_row =
@@ -618,6 +826,14 @@ void Rp1RioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
         BusyWaitWords(remaining_overlap_words);
       }
 
+      if (uses_shift_register) {
+        if (shifts_every_bitplane || display_row != last_shift_register_row) {
+          Rp1RioShiftRowAddress(h, double_rows, state.row_address_type,
+                                display_row);
+          last_shift_register_row = display_row;
+        }
+      }
+
       state.rio_out->Out = current_addr | state.output_enable_bit;
       ClockSetupDelay(state.gpio_slowdown);
       state.rio_out->Out =
@@ -631,10 +847,12 @@ void Rp1RioDumpFramebuffer(Framebuffer *framebuffer, int pwm_low_bit) {
     }
   }
 
-  if (previous_active_words > 0) {
-    state.rio_out->Out = previous_addr;
-    BusyWaitWords(previous_active_words);
-  }
+  // Keep the last row's final bitplane pending for the next refresh. This
+  // preserves the overlap pipeline across the frame boundary instead of
+  // displaying that row with a one-off end-of-frame dwell.
+  state.pending_addr = previous_addr;
+  state.pending_active_words = previous_active_words;
+  state.has_pending_active_words = true;
   state.rio_out->Out = previous_addr | state.output_enable_bit;
 }
 
@@ -668,6 +886,9 @@ void Rp1RioDeinit() {
   state.latch_bit = 0;
   state.used_mask = 0;
   state.word_time_nanos = 0.0;
+  state.has_pending_active_words = false;
+  state.pending_addr = 0;
+  state.pending_active_words = 0;
   state.bitplane_active_words.clear();
 }
 

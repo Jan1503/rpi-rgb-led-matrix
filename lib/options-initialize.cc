@@ -27,6 +27,7 @@
 
 #include "multiplex-mappers-internal.h"
 #include "framebuffer-internal.h"
+#include "spwm-helpers.h"
 
 #include "gpio.h"
 
@@ -37,7 +38,7 @@ RuntimeOptions::RuntimeOptions() :
 #else
   gpio_slowdown(GPIO::IsPi4() ? 2 : 1),
 #endif
-  rp1_rio(0),
+  rp1_pio(0),
   daemon(0),            // Don't become a daemon by default.
   drop_privileges(1),   // Encourage good practice: drop privileges by default.
   do_gpio_init(true),
@@ -78,7 +79,8 @@ static bool ConsumeIntFlag(const char *flag_name,
     return false;
   option += OPTION_PREFIX_LEN;
   const size_t flag_len = strlen(flag_name);
-  if (strncmp(option, flag_name, flag_len) != 0)
+  if (strncmp(option, flag_name, flag_len) != 0 ||
+      (option[flag_len] != '\0' && option[flag_len] != '='))
     return false;  // not consumed.
   const char *value;
   if (option[flag_len] == '=')  // --option=42  # value in same arg
@@ -113,7 +115,8 @@ static bool ConsumeStringFlag(const char *flag_name,
     return false;
   option += OPTION_PREFIX_LEN;
   const size_t flag_len = strlen(flag_name);
-  if (strncmp(option, flag_name, flag_len) != 0)
+  if (strncmp(option, flag_name, flag_len) != 0 ||
+      (option[flag_len] != '\0' && option[flag_len] != '='))
     return false;  // not consumed.
   const char *value;
   if (option[flag_len] == '=')  // --option=hello  # value in same arg
@@ -184,6 +187,12 @@ static bool FlagInit(int &argc, char **&argv,
       if (ConsumeIntFlag("row-addr-type", it, end,
                          &mopts->row_address_type, &err))
         continue;
+      if (ConsumeIntFlag("spwm-row-addr-type", it, end,
+                         &mopts->spwm_row_address_type, &err))
+        continue;
+      if (ConsumeIntFlag("spwm-scan", it, end,
+                         &mopts->spwm_scan_rows, &err))
+        continue;
       if (ConsumeIntFlag("limit-refresh", it, end,
                          &mopts->limit_refresh_rate_hz, &err))
         continue;
@@ -226,12 +235,12 @@ static bool FlagInit(int &argc, char **&argv,
       //-- Runtime options.
       if (ConsumeIntFlag("slowdown-gpio", it, end, &ropts->gpio_slowdown, &err))
         continue;
-      const int err_before_rp1_rio = err;
-      if (ConsumeIntFlag("rp1-rio", it, end, &ropts->rp1_rio, &err)) {
-        if (err == err_before_rp1_rio
-            && ropts->rp1_rio != 0 && ropts->rp1_rio != 1) {
+      const int err_before_rp1_pio = err;
+      if (ConsumeIntFlag("rp1-pio", it, end, &ropts->rp1_pio, &err)) {
+        if (err == err_before_rp1_pio
+            && ropts->rp1_pio != 0 && ropts->rp1_pio != 1) {
           fprintf(stderr, "%s%s=%d is outside usable range 0..1\n",
-                  OPTION_PREFIX, "rp1-rio", ropts->rp1_rio);
+                  OPTION_PREFIX, "rp1-pio", ropts->rp1_pio);
           ++err;
         }
         continue;
@@ -322,9 +331,11 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
 
   fprintf(out,
           "\t--led-gpio-mapping=<name> : Name of GPIO mapping used. Default \"%s\"\n"
-          "\t--led-rows=<rows>         : Panel rows. Typically 8, 16, 32 or 64."
-          " (Default: %d).\n"
-          "\t--led-cols=<cols>         : Panel columns. Typically 32 or 64. "
+          "\t--led-rows=<rows>         : Panel rows. Typically 8, 16, 32 or 64; "
+          "SPWM row-address types 1/2 can also use larger even counts such as 86. "
+          "(Default: %d).\n"
+          "\t--led-cols=<cols>         : Panel columns. Typically 32 or 64; "
+          "SPWM panels can also use non-standard widths such as 172. "
           "(Default: %d).\n"
           "\t--led-chain=<chained>     : Number of daisy-chained panels. "
           "(Default: %d).\n"
@@ -341,8 +352,11 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           "\t--led-brightness=<percent>: Brightness in percent (Default: %d).\n"
           "\t--led-scan-mode=<0..1>    : 0 = progressive; 1 = interlaced "
           "(Default: %d).\n"
-          "\t--led-row-addr-type=<0..4>: 0 = default; 1 = AB-addressed panels; 2 = direct row select; 3 = ABC-addressed panels; 4 = ABC Shift + DE direct "
+          "\t--led-row-addr-type=<0..5>: 0 = default; 1 = AB-addressed panels; 2 = direct row select; 3 = ABC-addressed panels; 4 = ABC Shift + DE direct; 5 = shift-register row select "
+          "(Default: 0).\n\n"
+          "\t--led-spwm-row-addr-type=<0..2>: SPWM-only row-address transport. 0 = direct A-E row flow; 1 = shift-register blank-clock A/C row-select; 2 = shift-register blank-clock A+B with wrap-C row-select "
           "(Default: 0).\n"
+          "\t--led-spwm-scan=<rows>    : SPWM-only scan-row override e.g 43 for 1/43 (Default: %d).\n\n"
           "\t--led-%sshow-refresh        : %show refresh rate.\n"
           "\t--led-limit-refresh=<Hz>  : Limit refresh rate to this frequency in Hz. Useful to keep a\n"
           "\t                            constant refresh rate on loaded system. 0=no limit. Default: %d\n"
@@ -355,7 +369,7 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           "\t--led-pwm-dither-bits=<0..2> : Time dithering of lower bits "
           "(Default: 0)\n"
           "\t--led-%shardware-pulse   : %sse hardware pin-pulse generation.\n"
-          "\t--led-panel-type=<name>   : Needed to initialize special panels. Supported: 'FM6126A', 'FM6127'\n"
+          "\t--led-panel-type=<name>   : Needed to initialize special panels. Supported: 'FM6126A', 'FM6127', 'FM6373', 'ICND1065L', 'SM16380SH', 'FM6363', 'FM6353'\n"
           "\t--led-%sbusy-waiting     : %sse busy waiting when limiting refresh rate.\n",
           d.hardware_mapping,
           d.rows, d.cols, d.chain_length, d.parallel,
@@ -363,6 +377,7 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           available_mappers.c_str(),
           internal::Framebuffer::kBitPlanes, d.pwm_bits,
           d.brightness, d.scan_mode,
+          d.spwm_scan_rows,
           d.show_refresh_rate ? "no-" : "", d.show_refresh_rate ? "Don't s" : "S",
           d.limit_refresh_rate_hz,
           d.inverse_colors ? "no-" : "",    d.inverse_colors ? "off" : "on",
@@ -373,17 +388,19 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           !d.disable_busy_waiting ? "Don't u" : "U");
 
   fprintf(out,
-          "\t--led-slowdown-gpio=<%d..4>: "
+          "\t--led-slowdown-gpio=<%d..60>: "
           "Slowdown GPIO. Needed for faster Pis/slower panels "
-          "(Default: %d (2 on Pi4, 1 other)%s).\n",
+          "(Default: %d (2 on Pi4, 1 other)%s).\n"
+          "\t                            Pi5 RIO mode: test low, middle and "
+          "high values for fastest refresh.\n",
           (LED_MATRIX_ALLOW_BARRIER_DELAY ? -1 : 0), r.gpio_slowdown,
-          LED_MATRIX_ALLOW_BARRIER_DELAY ? "Use -1 for memory barrier approach"
+          LED_MATRIX_ALLOW_BARRIER_DELAY ? " Use -1 for memory barrier approach"
                                          : "");
   fprintf(out,
-          "\t--led-rp1-rio=<0|1>       : On Raspberry Pi 5-family boards, choose the "
-          "experimental RP1 RIO backend instead of RP1 PIO.\n"
-          "\t                            0=PIO, 1=RIO (Default: %d).\n",
-          r.rp1_rio);
+          "\t--led-rp1-pio=<0|1>       : On Raspberry Pi 5-family boards, force the "
+          "RP1 PIO backend.\n"
+          "\t                            0=default RP1 RIO, 1=PIO (Default: %d).\n",
+          r.rp1_pio);
   if (r.daemon >= 0) {
     const bool on = (r.daemon > 0);
     fprintf(out,
@@ -410,9 +427,18 @@ bool RGBMatrix::Options::Validate(std::string *err_in) const {
   std::string scratch;
   std::string *err = err_in ? err_in : &scratch;
   bool success = true;
-  if (rows < 8 || rows > 64 || rows % 2 != 0) {
-    err->append("Invalid number or rows per panel (--led-rows). "
-                "Should be in range of [8..64] and divisible by 2.\n");
+  const bool allow_large_spwm_rows =
+      internal::spwm_uses_extended_row_range(panel_type, spwm_row_address_type);
+  const int max_rows = allow_large_spwm_rows ? 128 : 64;
+  if (rows < 8 || rows > max_rows || rows % 2 != 0) {
+    err->append("Invalid number of rows per panel (--led-rows). "
+                "Should be in range of [8..")
+        .append(std::to_string(max_rows))
+        .append("] and divisible by 2");
+    if (allow_large_spwm_rows) {
+      err->append(" when using SPWM row-address type 1 or 2");
+    }
+    err->append(".\n");
     success = false;
   }
 
@@ -436,7 +462,17 @@ bool RGBMatrix::Options::Validate(std::string *err_in) const {
   }
 
   if (row_address_type < 0 || row_address_type > 5) {
-    err->append("Row address type values can be 0 (default), 1 (AB addressing), 2 (direct row select), 3 (ABC address), 4 (ABC Shift + DE direct), 5 (Test row select).\n");
+    err->append("Row address type values can be 0 (default), 1 (AB addressing), 2 (direct row select), 3 (ABC address), 4 (ABC Shift + DE direct), 5 (shift-register row select).\n");
+    success = false;
+  }
+
+  if (spwm_row_address_type < 0 || spwm_row_address_type > 2) {
+    err->append("SPWM row address type values can be 0 (direct A-E SPWM row flow), 1 (shift-register blank-clock A/C row-select path), or 2 (shift-register blank-clock A+B with wrap-C row-select path).\n");
+    success = false;
+  }
+
+  if (spwm_scan_rows < 0) {
+    err->append("SPWM scan row count must be 0 (use rows/2) or a positive number.\n");
     success = false;
   }
 

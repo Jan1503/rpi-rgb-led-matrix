@@ -30,11 +30,11 @@
 #include <unistd.h>
 
 #include "gpio.h"
-#include "rp1/rp1_pio_backend.h"
-#include "rp1/rp1_rio_backend.h"
+#include "rp1/rp1_backend.h"
 #include "thread.h"
 #include "framebuffer-internal.h"
 #include "multiplex-mappers-internal.h"
+#include "spwm-helpers.h"
 
 // C wrapper to reset global GPIO bookkeeping from external callers.
 extern "C" void ledmatrix_reset_global_gpio();
@@ -58,6 +58,38 @@ extern "C" void ledmatrix_reset_global_gpio() { s_global_io.ResetState(); }
 #endif
 
 namespace rgb_matrix {
+namespace {
+
+uint64_t GetMonotonicNanos() {
+  struct timespec ts;
+#ifdef CLOCK_MONOTONIC_RAW
+  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#else
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+  return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
+}
+
+void WaitUntilNanos(uint64_t deadline_ns, bool allow_busy_waiting) {
+  for (;;) {
+    const uint64_t now_ns = GetMonotonicNanos();
+    if (now_ns >= deadline_ns) return;
+
+    const uint64_t remaining_ns = deadline_ns - now_ns;
+    if (!allow_busy_waiting && remaining_ns > 200000) {
+      // Sleep most of the remaining time, then busy-spin the tail so the
+      // next frame starts close to the requested phase.
+      const long sleep_us = static_cast<long>((remaining_ns - 50000) / 1000);
+      if (sleep_us > 0) {
+        SleepMicroseconds(sleep_us);
+        continue;
+      }
+    }
+  }
+}
+
+}  // namespace
+
 // Implementation details of RGBmatrix.
 class RGBMatrix::Impl {
   class UpdateThread;
@@ -138,12 +170,17 @@ public:
                int limit_refresh_hz, bool allow_busy_waiting)
     : io_(io), show_refresh_(show_refresh),
       target_frame_usec_(limit_refresh_hz < 1 ? 0 : 1e6/limit_refresh_hz),
+      target_frame_nsec_(limit_refresh_hz < 1
+                         ? 0
+                         : 1000000000ull / (uint64_t) limit_refresh_hz),
+      spwm_phase_lock_enabled_(limit_refresh_hz > 0 && spwm_is_enabled()),
       allow_busy_waiting_(allow_busy_waiting),
       running_(true),
       current_frame_(initial_frame), next_frame_(NULL),
       requested_frame_multiple_(1) {
     pthread_cond_init(&frame_done_, NULL);
     pthread_cond_init(&input_change_, NULL);
+    spwm_reset_frame_phase_lock();
     switch (pwm_dither_bits) {
     case 0:
       start_bit_[0] = 0; start_bit_[1] = 0;
@@ -178,7 +215,12 @@ public:
     bool max_measure_enabled = false;
 
     while (running()) {
+      const uint64_t start_time_ns = GetMonotonicNanos();
       const uint32_t start_time_us = GetMicrosecondCounter();
+
+      if (spwm_phase_lock_enabled_) {
+        spwm_prepare_frame_phase_lock();
+      }
 
       current_frame_->framebuffer()
         ->DumpToMatrix(io_, start_bit_[low_bit_sequence % 4]);
@@ -201,7 +243,7 @@ public:
       }
 
       // Read input bits.
-      if (!Rp1PioIsActive() && !Rp1RioIsActive()) {
+      if (!Rp1BackendIsActive()) {
         const gpio_bits_t inputs = io_->Read();
         if (inputs != last_gpio_bits) {
           last_gpio_bits = inputs;
@@ -214,14 +256,21 @@ public:
       ++frame_count;
       ++low_bit_sequence;
 
-      if (target_frame_usec_) {
-        if (allow_busy_waiting_) {
-          while ((GetMicrosecondCounter() - start_time_us) < target_frame_usec_) {
-            // busy wait. We have our dedicated core, so ok to burn cycles.
+      if (target_frame_nsec_) {
+        if (spwm_phase_lock_enabled_) {
+          const uint64_t wait_until_ns =
+              spwm_resolve_frame_phase_lock_deadline(start_time_ns,
+                                                     target_frame_nsec_);
+          WaitUntilNanos(wait_until_ns, allow_busy_waiting_);
+        } else if (target_frame_usec_) {
+          if (allow_busy_waiting_) {
+            while ((GetMicrosecondCounter() - start_time_us) < target_frame_usec_) {
+              // busy wait. We have our dedicated core, so ok to burn cycles.
+            }
+          } else {
+            long spent_us = GetMicrosecondCounter() - start_time_us;
+            SleepMicroseconds(target_frame_usec_ - spent_us);
           }
-        } else {
-          long spent_us = GetMicrosecondCounter() - start_time_us;
-          SleepMicroseconds(target_frame_usec_ - spent_us);
         }
       }
 
@@ -266,6 +315,8 @@ private:
   GPIO *const io_;
   const bool show_refresh_;
   const uint32_t target_frame_usec_;
+  const uint64_t target_frame_nsec_;
+  const bool spwm_phase_lock_enabled_;
   const bool allow_busy_waiting_;
   uint32_t start_bit_[4];
 
@@ -313,6 +364,8 @@ RGBMatrix::Options::Options() :
 #endif
 
   row_address_type(0),
+  spwm_row_address_type(0),
+  spwm_scan_rows(0),
   multiplexing(0),
 
 #ifdef DISABLE_HARDWARE_PULSES
@@ -367,6 +420,8 @@ static void PrintOptions(const RGBMatrix::Options &o) {
   P_INT(brightness);
   P_INT(scan_mode);
   P_INT(row_address_type);
+  P_INT(spwm_row_address_type);
+  P_INT(spwm_scan_rows);
   P_INT(multiplexing);
   P_BOOL(disable_hardware_pulsing);
   P_BOOL(show_refresh_rate);
@@ -428,8 +483,7 @@ RGBMatrix::Impl::~Impl() {
   // Make sure LEDs are off.
   active_->Clear();
   if (io_) active_->framebuffer()->DumpToMatrix(io_, 0);
-  internal::Rp1RioDeinit();
-  internal::Rp1PioDeinit();
+  internal::Rp1BackendDeinit();
 
   for (size_t i = 0; i < created_frames_.size(); ++i) {
     delete created_frames_[i];
@@ -442,19 +496,19 @@ RGBMatrix::~RGBMatrix() {
 }
 
 uint64_t RGBMatrix::Impl::RequestInputs(uint64_t bits) {
-  if (Rp1PioIsActive() || Rp1RioIsActive()) return 0;
+  if (Rp1BackendIsActive()) return 0;
   return io_->RequestInputs(static_cast<gpio_bits_t>(bits));
 }
 
 uint64_t RGBMatrix::Impl::RequestOutputs(uint64_t output_bits) {
-  if (Rp1PioIsActive() || Rp1RioIsActive()) return 0;
+  if (Rp1BackendIsActive()) return 0;
   uint64_t success_bits = io_->InitOutputs(static_cast<gpio_bits_t>(output_bits));
   user_output_bits_ |= success_bits;
   return success_bits;
 }
 
 void RGBMatrix::Impl::OutputGPIO(uint64_t output_bits) {
-  if (Rp1PioIsActive() || Rp1RioIsActive()) return;
+  if (Rp1BackendIsActive()) return;
   io_->WriteMaskedBits(static_cast<gpio_bits_t>(output_bits), static_cast<gpio_bits_t>(user_output_bits_));
 }
 
@@ -487,11 +541,15 @@ void RGBMatrix::Impl::SetGPIO(GPIO *io, bool start_thread) {
   if (io != NULL && io_ == NULL) {
     io_ = io;
     Framebuffer::InitGPIO(io_, params_.rows, params_.parallel,
+                          params_.panel_type,
                           !params_.disable_hardware_pulsing,
                           params_.pwm_lsb_nanoseconds, params_.pwm_dither_bits,
-                          params_.row_address_type);
+                          params_.row_address_type,
+                          params_.spwm_row_address_type);
     Framebuffer::InitializePanels(io_, params_.panel_type,
-                                  params_.cols * params_.chain_length);
+                                  params_.cols * params_.chain_length,
+                                  params_.spwm_row_address_type,
+                                  params_.spwm_scan_rows);
   }
   if (start_thread) {
     StartRefresh();
@@ -517,6 +575,9 @@ bool RGBMatrix::Impl::StartRefresh() {
 }
 
 FrameCanvas *RGBMatrix::Impl::CreateFrameCanvas() {
+  const bool allow_large_spwm_rows =
+      spwm_uses_extended_row_range(params_.panel_type,
+                                   params_.spwm_row_address_type);
   FrameCanvas *result =
     new FrameCanvas(new Framebuffer(params_.rows,
                                     params_.cols * params_.chain_length,
@@ -524,6 +585,7 @@ FrameCanvas *RGBMatrix::Impl::CreateFrameCanvas() {
                                     params_.scan_mode,
                                     params_.led_rgb_sequence,
                                     params_.inverse_colors,
+                                    allow_large_spwm_rows,
                                     &shared_pixel_mapper_));
   if (created_frames_.empty()) {
     // First time. Get defaults from initial Framebuffer.
@@ -563,7 +625,7 @@ FrameCanvas *RGBMatrix::Impl::SwapOnVSync(FrameCanvas *other,
 
 uint64_t RGBMatrix::Impl::AwaitInputChange(int timeout_ms) {
   if (!updater_) return 0;
-  if (Rp1PioIsActive() || Rp1RioIsActive()) return 0;
+  if (Rp1BackendIsActive()) return 0;
   return updater_->AwaitInputChange(timeout_ms);
 }
 
@@ -709,63 +771,35 @@ RGBMatrix *RGBMatrix::CreateFromOptions(const RGBMatrix::Options &options,
     return NULL;
   }
 
-  // For the Pi4, we might need 2, maybe up to 4. Let's open up to 5.
-  // on supported architectures, -1 will emit memory barier (DSB ST) after GPIO write
-  if (runtime_options.gpio_slowdown < (LED_MATRIX_ALLOW_BARRIER_DELAY ? -1 : 0)
-      || runtime_options.gpio_slowdown > 10) {
-    fprintf(stderr, "--led-slowdown-gpio=%d is outside usable range\n",
-            runtime_options.gpio_slowdown);
+  // Faster boards or slower panels can need higher delays, especially with
+  // RP1 RIO/PIO paths where this value also acts as a timing divisor.
+  // On supported architectures, -1 will emit memory barrier (DSB ST) after GPIO write.
+  const int min_gpio_slowdown = LED_MATRIX_ALLOW_BARRIER_DELAY ? -1 : 0;
+  const int max_gpio_slowdown = 60;
+  if (runtime_options.gpio_slowdown < min_gpio_slowdown
+      || runtime_options.gpio_slowdown > max_gpio_slowdown) {
+    fprintf(stderr, "--led-slowdown-gpio=%d is outside usable range %d..%d\n",
+            runtime_options.gpio_slowdown, min_gpio_slowdown,
+            max_gpio_slowdown);
     return NULL;
   }
-  if (runtime_options.rp1_rio != 0 && runtime_options.rp1_rio != 1) {
-    fprintf(stderr, "--led-rp1-rio=%d is outside usable range 0..1\n",
-            runtime_options.rp1_rio);
-    return NULL;
-  }
-
   // Use file-scope GPIO instance.
   GPIO &io = s_global_io;
-  Rp1RioSetEnabled(runtime_options.rp1_rio > 0);
-  const bool use_rp1_rio = runtime_options.do_gpio_init
-      && Rp1RioShouldActivate(options.hardware_mapping,
-                              options.row_address_type,
-                              options.parallel);
-  const bool use_rp1_pio = !use_rp1_rio && runtime_options.do_gpio_init
-      && Rp1PioShouldActivate(options.hardware_mapping,
-                              options.row_address_type,
-                              options.parallel);
-  if (use_rp1_rio) {
-    Rp1RioSetGpioSlowdown(runtime_options.gpio_slowdown);
-  }
-  if (use_rp1_pio) {
-    Rp1PioSetGpioSlowdown(runtime_options.gpio_slowdown);
-  }
-
-  const bool pi5_backend_available =
-      Rp1PioPlatformDetected() || Rp1RioPlatformDetected();
-  if (runtime_options.do_gpio_init && pi5_backend_available
-      && !use_rp1_pio && !use_rp1_rio) {
-    if (Rp1RioBackendRequested()) {
-      fprintf(stderr,
-              "Pi 5-family RP1 RIO backend was requested via "
-              "--led-rp1-rio=1, but this configuration is not "
-              "supported yet.\n"
-              "Supported for now: mappings "
-              "regular/adafruit-hat/adafruit-hat-pwm/classic and "
-              "--led-row-addr-type=0 or 2.\n");
-    } else {
-      fprintf(stderr,
-              "Pi 5-family RP1 backend is available, but this configuration is not "
-              "supported yet.\n"
-              "Supported for now: mappings "
-              "regular/adafruit-hat/adafruit-hat-pwm/classic and "
-              "--led-row-addr-type=0 or 2.\n");
-    }
+  bool use_rp1_backend = false;
+  if (!Rp1BackendSelectForOptions(runtime_options.do_gpio_init,
+                                  runtime_options.rp1_pio,
+                                  runtime_options.gpio_slowdown,
+                                  options.hardware_mapping,
+                                  options.row_address_type,
+                                  options.parallel,
+                                  options.panel_type,
+                                  &use_rp1_backend, &error)) {
+    fprintf(stderr, "%s", error.c_str());
     return NULL;
   }
 
   // C wrapper implementation is at file scope; use local reference `io`.
-  if (runtime_options.do_gpio_init && !use_rp1_pio && !use_rp1_rio
+  if (runtime_options.do_gpio_init && !use_rp1_backend
       && !io.Init(runtime_options.gpio_slowdown)) {
     fprintf(stderr, "Must run as root to be able to access /dev/mem\n"
             "Prepend 'sudo' to the command\n");

@@ -16,14 +16,17 @@ internal struct InternalRGBLedMatrixOptions
     public int brightness;
     public int scan_mode;
     public int row_address_type;
+    public int spwm_row_address_type;
+    public int spwm_scan_rows;
     public int multiplexing;
     public byte disable_hardware_pulsing;
-    public IntPtr pixel_mapper_config;
-    public IntPtr panel_type;
-    public IntPtr led_rgb_sequence;
     public byte show_refresh_rate;
     public byte inverse_colors;
+    public IntPtr led_rgb_sequence;
+    public IntPtr pixel_mapper_config;
+    public IntPtr panel_type;
     public int limit_refresh_rate_hz;
+    public byte disable_busy_waiting;
 
     public InternalRGBLedMatrixOptions(RGBLedMatrixOptions opt)
     {
@@ -46,5 +49,8 @@ internal struct InternalRGBLedMatrixOptions
         brightness = opt.Brightness;
         disable_hardware_pulsing = (byte)(opt.DisableHardwarePulsing ? 1 : 0);
         row_address_type = opt.RowAddressType;
+        spwm_row_address_type = opt.SpwmRowAddressType;
+        spwm_scan_rows = opt.SpwmScanRows;
+        disable_busy_waiting = (byte)(opt.DisableBusyWaiting ? 1 : 0);
     }
 };

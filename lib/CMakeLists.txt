@@ -40,9 +40,13 @@ set(RGBMATRIX_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/multiplex-mappers.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/options-initialize.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/pixel-mapper.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/rp1/rp1_backend.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/rp1/rp1_pio_backend.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/rp1/rp1_pio_support.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rp1/rp1_rio_backend.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/rp1/rp1_spwm_gpio.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/spwm-helpers.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/spwm-panel-config.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/thread.cc
 )
 cmake_print_variables(RGBMATRIX_SOURCES)

@@ -49,9 +49,7 @@ you want to get started programming your own utils.
 
 Panels supported
 ----------------
-This library does not support PWM panels (which actually are better, but need
-a completely different driver).\
-It should support most other panels with direct addressing (3 to 5 address lines,
+The library supports most panels with direct addressing (3 to 5 address lines,
 ABC for 8x2=16 lines, ABCD for 16x2=32 lines, and ABCDE for 32x2=64 lines).
 It also supports panels using shift registers for line addressing, also called ABC
 panels up to 64 lines.\
@@ -68,14 +66,41 @@ Please do refer to --led-multiplexing=<0..17> mentioned below and try all values
 These should be labelled as "special" in the table above. They are not supported by this
 lib, as it only supports non PWM panels (until someone contributes PWM support).
 
-PWM/E-PWM/S-PWM Panels
+PWM / E-PWM / S-PWM Panels
 ----------------------
-Newer PWM panels are not currently supported by this lib, but support would really be appreciated.
-- https://github.com/hzeller/rpi-rgb-led-matrix/issues/466 - Master bug tracking PWM efforts
-- https://github.com/hzeller/rpi-rgb-led-matrix/issues/1866 - Continued discussion
+These newer panel types currently have limited and experimental support.
+SPWM panels currently supported by this tree:
 
-Some experimentation and success has been made with the following fork. Some panel support with FM6373, FM6363, SM16380SH
-- https://github.com/kingdo9/rpi-rgb-led-matrix_pwm_experiment
+- FM6373 + DP32019B direct row selection: \
+  `--led-panel-type=fm6373 --led-spwm-row-addr-type=0`
+<br>
+
+- ICND1065L + shift-register row selection: \
+  `--led-panel-type=icnd1065l --led-rows=86 --led-cols=172 --led-spwm-row-addr-type=2 --led-spwm-scan=43`
+<br>
+
+- FM6353: \
+  `--led-panel-type=fm6353 --led-spwm-row-addr-type=1`
+<br>
+
+- FM6363 + DP32020A shift-register row selection: \
+  `--led-panel-type=fm6363 --led-spwm-row-addr-type=1`
+<br>
+
+- SM16380SH \
+  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=0`
+<br>
+
+Shared SPWM flags:
+
+- `--led-spwm-row-addr-type=<0..2>` selects the SPWM row-address transport.
+- `--led-spwm-scan=<rows>` overrides the SPWM scan-row count e.g values such as `43` for 1/43.
+
+[SPWM Tuning Guide](./spwm.md)
+
+SPWM panel discussion and resources - https://github.com/hzeller/rpi-rgb-led-matrix/issues/1866
+
+SPWM First discussion - https://github.com/hzeller/rpi-rgb-led-matrix/issues/466
 
 
 Raspberry Pi 1-5 supported
@@ -87,10 +112,11 @@ as the Compute Modules which have 44 GPIOs.
 #### Raspberry Pi 5 support has now been added.
 There are two modes to run this on the Pi 5 
 
-**--led-rp1-rio=0** - Uses the Pi 5 coprocessor RP1 to perform the work (default) - Very minimal CPU usage
+**--led-rp1-pio=0** - Uses the RP1 RIO GPIO path. This is the default on Pi 5-family boards and supports non-SPWM and SPWM displays.
 
-**--led-rp1-rio=1** - Uses Registered IO block of RP1 to communicate with the GPIO - Higher CPU usage but much faster performance.\
-**NOTE: --led-slowdown-gpio** can have the opposite effect in this mode, so going from 2 to 3 may increase performance slightly with --led-rp1-rio=1.
+**--led-rp1-pio=1** - Uses the Pi 5 coprocessor RP1 PIO block to perform the work - Very minimal CPU usage for non-SPWM displays only.
+
+**NOTE: --led-slowdown-gpio** can have the opposite effect in the default RIO mode, test low, middle and high values for fastest refresh with --led-rp1-pio=0.
 
 Pi 5 Discussion -  https://github.com/hzeller/rpi-rgb-led-matrix/issues/1603
 
@@ -288,7 +314,8 @@ Learn more about the mappings in the [wiring documentation](wiring.md#alternativ
 #### GPIO speed
 
 ```
---led-slowdown-gpio=<0..10>: Slowdown GPIO. Needed for faster Pis and/or slower panels (Default: 1).
+--led-slowdown-gpio=<0..60>: Slowdown GPIO. Needed for faster Pis and/or slower panels (Default: 1).
+                            Pi5 RIO mode: test low, middle and high values for fastest refresh.
 ```
 
 The Raspberry Pi starting with Pi2 are putting out data too fast for almost
@@ -310,8 +337,8 @@ happy.
 The next most important flags describe the type and number of displays connected
 
 ```
---led-rows=<rows>        : Panel rows. Typically 8, 16, 32 or 64. (Default: 32).
---led-cols=<cols>        : Panel columns. Typically 32 or 64. (Default: 32).
+--led-rows=<rows>        : Panel rows. Typically 8, 16, 32 or 64; SPWM row-address types 1/2 can also use larger even counts such as 86. (Default: 32).
+--led-cols=<cols>        : Panel columns. Typically 32 or 64; SPWM panels can also use non-standard widths such as 172. (Default: 32).
 --led-chain=<chained>    : Number of daisy-chained panels. (Default: 1).
 --led-parallel=<parallel>: For A/B+ models or RPi2,3b: parallel chains. range=1..3 (Default: 1, 6 for Compute Module).
 ```
@@ -372,7 +399,12 @@ two chained panels, so then you'd use
 
 ```
 --led-row-addr-type=<0..5>: 0 = default; 1 = AB-addressed panels; 2 = direct row select; 3 = ABC-addressed panels; 4 = ABC Shift + DE direct, 5 = ABC method similar to 3, but faster on some panels (needs less of a slowdown) (Default: 0).
+
+--led-spwm-row-addr-type=<0..2>: SPWM row select. 0 = direct A-E row flow; 1 = shift-register blank-clock A/C row-select; 2 = shift-register blank-clock A+B with wrap-C row-select (Default: 0).
+--led-spwm-scan=<rows>: SPWM-only scan-row override e.g 43 for 1/43 (Default: 0).
 ```
+
+For SPWM panels, `--led-panel-type` selects the panel profile, `--led-spwm-row-addr-type` selects the SPWM row-address path, and `--led-spwm-scan` is only needed when the shift-register path needs a non-default scan count.
 
 This option is useful for certain 64x64 or 32x16 panels. For 64x64 panels,
 that only have an `A` and `B` address line, you'd use `--led-row-addr-type=1`.

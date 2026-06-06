@@ -10,9 +10,8 @@ class Framebuffer;
 
 // Internal Pi 5-family RP1 RIO renderer.
 //
-// This backend is explicitly opt-in, because it drives the RP1 GPIO fabric
-// directly through MMIO instead of using the default PIO path. The lifecycle is
-// the same as the PIO backend, with SetEnabled()/BackendRequested() carrying
+// This backend drives the RP1 GPIO fabric directly through MMIO. The lifecycle
+// is the same as the PIO backend, with SetEnabled()/BackendRequested() carrying
 // the user-facing runtime choice before activation.
 bool Rp1RioPlatformDetected();
 void Rp1RioSetEnabled(bool enabled);

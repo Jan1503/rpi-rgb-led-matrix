@@ -80,6 +80,8 @@ static struct RGBLedMatrix *led_matrix_create_from_options_optional_edit(
     OPT_COPY_IF_SET(brightness);
     OPT_COPY_IF_SET(scan_mode);
     OPT_COPY_IF_SET(row_address_type);
+    OPT_COPY_IF_SET(spwm_row_address_type);
+    OPT_COPY_IF_SET(spwm_scan_rows);
     OPT_COPY_IF_SET(multiplexing);
     OPT_COPY_IF_SET(disable_hardware_pulsing);
     OPT_COPY_IF_SET(show_refresh_rate);
@@ -96,7 +98,7 @@ static struct RGBLedMatrix *led_matrix_create_from_options_optional_edit(
     // Same story as RGBMatrix::Options
 #define RT_OPT_COPY_IF_SET(o) if (rt_opts->o) default_rt.o = rt_opts->o
     RT_OPT_COPY_IF_SET(gpio_slowdown);
-    RT_OPT_COPY_IF_SET(rp1_rio);
+    RT_OPT_COPY_IF_SET(rp1_pio);
     RT_OPT_COPY_IF_SET(daemon);
     RT_OPT_COPY_IF_SET(drop_privileges);
     RT_OPT_COPY_IF_SET(do_gpio_init);
@@ -128,6 +130,8 @@ static struct RGBLedMatrix *led_matrix_create_from_options_optional_edit(
     ACTUAL_VALUE_BACK_TO_OPT(brightness);
     ACTUAL_VALUE_BACK_TO_OPT(scan_mode);
     ACTUAL_VALUE_BACK_TO_OPT(row_address_type);
+    ACTUAL_VALUE_BACK_TO_OPT(spwm_row_address_type);
+    ACTUAL_VALUE_BACK_TO_OPT(spwm_scan_rows);
     ACTUAL_VALUE_BACK_TO_OPT(multiplexing);
     ACTUAL_VALUE_BACK_TO_OPT(disable_hardware_pulsing);
     ACTUAL_VALUE_BACK_TO_OPT(show_refresh_rate);
@@ -143,7 +147,7 @@ static struct RGBLedMatrix *led_matrix_create_from_options_optional_edit(
   if (rt_opts) {
 #define ACTUAL_VALUE_BACK_TO_RT_OPT(o) rt_opts->o = runtime_opt.o
     ACTUAL_VALUE_BACK_TO_RT_OPT(gpio_slowdown);
-    ACTUAL_VALUE_BACK_TO_RT_OPT(rp1_rio);
+    ACTUAL_VALUE_BACK_TO_RT_OPT(rp1_pio);
     ACTUAL_VALUE_BACK_TO_RT_OPT(daemon);
     ACTUAL_VALUE_BACK_TO_RT_OPT(drop_privileges);
     ACTUAL_VALUE_BACK_TO_RT_OPT(do_gpio_init);

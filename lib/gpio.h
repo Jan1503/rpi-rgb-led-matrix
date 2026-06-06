@@ -58,6 +58,11 @@ public:
   // Set the bits that are '1' in the output. Leave the rest untouched.
   inline void SetBits(gpio_bits_t value) {
     if (!value) return;
+    if (uses_rp1_spwm_rio_) {
+      WriteRp1SpwmSetBits(value);
+      delay();
+      return;
+    }
     WriteSetBits(value);
     delay();
   }
@@ -65,12 +70,22 @@ public:
   // Clear the bits that are '1' in the output. Leave the rest untouched.
   inline void ClearBits(gpio_bits_t value) {
     if (!value) return;
+    if (uses_rp1_spwm_rio_) {
+      WriteRp1SpwmClrBits(value);
+      delay();
+      return;
+    }
     WriteClrBits(value);
     delay();
   }
 
   // Write all the bits of "value" mentioned in "mask". Leave the rest untouched.
   inline void WriteMaskedBits(gpio_bits_t value, gpio_bits_t mask) {
+    if (uses_rp1_spwm_rio_) {
+      WriteRp1SpwmMaskedBits(value, mask);
+      delay();
+      return;
+    }
     // Writing a word is two operations. The IO is actually pretty slow, so
     // this should probably  be unnoticable.
     WriteClrBits(~value & mask);
@@ -93,7 +108,8 @@ private:
         return;
     }
 #endif
-    for (int n = 0; n < slowdown_; n++) {
+    const int delay_count = slowdown_;
+    for (int n = 0; n < delay_count; n++) {
       *gpio_clr_bits_low_ = 0;
     }
   }
@@ -122,12 +138,40 @@ private:
 #endif
   }
 
+  inline void WriteRp1SpwmOutputWord() {
+    *rp1_spwm_rio_write_bits_ =
+        static_cast<uint32_t>(rp1_spwm_rio_write_state_ & 0xFFFFFFFF);
+  }
+
+  inline void WriteRp1SpwmSetBits(gpio_bits_t value) {
+    rp1_spwm_rio_write_state_ |= value & output_bits_;
+    WriteRp1SpwmOutputWord();
+  }
+
+  inline void WriteRp1SpwmClrBits(gpio_bits_t value) {
+    rp1_spwm_rio_write_state_ &= ~(value & output_bits_);
+    WriteRp1SpwmOutputWord();
+  }
+
+  inline void WriteRp1SpwmMaskedBits(gpio_bits_t value, gpio_bits_t mask) {
+    mask &= output_bits_;
+    rp1_spwm_rio_write_state_ =
+        (rp1_spwm_rio_write_state_ & ~mask) | (value & mask);
+    WriteRp1SpwmOutputWord();
+  }
+
 private:
   gpio_bits_t output_bits_;
   gpio_bits_t input_bits_;
   gpio_bits_t reserved_bits_;
   int slowdown_;
+  bool uses_rp1_spwm_rio_;
+  // RP1 SPWM-only fast path: cached full RIO Out word used for masked writes.
+  gpio_bits_t rp1_spwm_rio_write_state_;
 
+  volatile uint32_t *rp1_spwm_rio_write_bits_;
+  // Generic low 32-bit GPIO register aliases. On Pi 5 SPWM these point at RP1
+  // RIO registers; otherwise they point at the legacy BCM GPIO registers.
   volatile uint32_t *gpio_set_bits_low_;
   volatile uint32_t *gpio_clr_bits_low_;
   volatile uint32_t *gpio_read_bits_low_;

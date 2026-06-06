@@ -154,6 +154,14 @@ cdef class RGBMatrixOptions:
         def __get__(self): return self.__options.row_address_type
         def __set__(self, uint8_t value): self.__options.row_address_type = value
 
+    property spwm_row_address_type:
+        def __get__(self): return self.__options.spwm_row_address_type
+        def __set__(self, uint8_t value): self.__options.spwm_row_address_type = value
+
+    property spwm_scan_rows:
+        def __get__(self): return self.__options.spwm_scan_rows
+        def __set__(self, uint8_t value): self.__options.spwm_scan_rows = value
+
     property disable_hardware_pulsing:
         def __get__(self): return self.__options.disable_hardware_pulsing
         def __set__(self, value): self.__options.disable_hardware_pulsing = value
@@ -192,6 +200,10 @@ cdef class RGBMatrixOptions:
         def __get__(self): return self.__options.limit_refresh_rate_hz
         def __set__(self, value): self.__options.limit_refresh_rate_hz = value
 
+    property disable_busy_waiting:
+        def __get__(self): return self.__options.disable_busy_waiting
+        def __set__(self, value): self.__options.disable_busy_waiting = value
+
 
     # RuntimeOptions properties
 
@@ -199,9 +211,9 @@ cdef class RGBMatrixOptions:
         def __get__(self): return self.__runtime_options.gpio_slowdown
         def __set__(self, uint8_t value): self.__runtime_options.gpio_slowdown = value
 
-    property rp1_rio:
-        def __get__(self): return self.__runtime_options.rp1_rio
-        def __set__(self, uint8_t value): self.__runtime_options.rp1_rio = value
+    property rp1_pio:
+        def __get__(self): return self.__runtime_options.rp1_pio
+        def __set__(self, uint8_t value): self.__runtime_options.rp1_pio = value
 
     property daemon:
         def __get__(self): return self.__runtime_options.daemon

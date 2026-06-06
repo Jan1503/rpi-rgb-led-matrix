@@ -21,18 +21,18 @@
 
 #include <algorithm>
 #include <assert.h>
-#include <ctype.h>
+#include <cctype>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <algorithm>
+#include <strings.h>
+#include <vector>
 
 #include "gpio.h"
-#include "rp1/rp1_pio_backend.h"
-#include "rp1/rp1_rio_backend.h"
+#include "rp1/rp1_backend.h"
+#include "spwm-helpers.h"
 #include "../include/graphics.h"
 
 namespace rgb_matrix {
@@ -40,6 +40,8 @@ namespace internal {
 // We need one global instance of a timing correct pulser. There are different
 // implementations depending on the context.
 static PinPulser *sOutputEnablePulser = NULL;
+// This guards both classic output-enable pulser setup and SPWM GPIO setup.
+static bool sMatrixGpioInitialized = false;
 
 #ifdef ONLY_SINGLE_SUB_PANEL
 #  define SUB_PANELS_ 1
@@ -60,15 +62,6 @@ PixelDesignatorMap::PixelDesignatorMap(int width, int height,
     fill_bits_(fill_bits),
     buffer_(width * height) {
 }
-
-// Different panel types use different techniques to set the row address.
-// We abstract that away with different implementations of RowAddressSetter
-class RowAddressSetter {
-public:
-  virtual ~RowAddressSetter() {}
-  virtual gpio_bits_t need_bits() const = 0;
-  virtual void SetRowAddress(GPIO *io, int row) = 0;
-};
 
 namespace {
 
@@ -206,7 +199,6 @@ private:
   const gpio_bits_t dck_;
 };
 
-
 class ShiftRegisterRowAddressSetter : public RowAddressSetter {
 public:
   ShiftRegisterRowAddressSetter(int double_rows, const HardwareMapping &h)
@@ -317,6 +309,44 @@ private:
   int last_row_;
 };
 
+// SPWM panel profiles choose init/register/OE behavior, while
+// --led-spwm-row-addr-type only chooses how rows are transported at runtime.
+RowAddressSetter *CreateSpwmRowTransportSetter(int double_rows,
+                                               const HardwareMapping &h,
+                                               int spwm_row_address_type) {
+  switch (spwm_row_address_type) {
+    case SPWM_ROW_ADDRESS_TYPE_0_DIRECT_AE:
+      return new DirectRowAddressSetter(double_rows, h);
+    case SPWM_ROW_ADDRESS_TYPE_1_SHIFTREG_BLANK_CLOCK:
+    case SPWM_ROW_ADDRESS_TYPE_2_SHIFTREG_AB_BLANK_CLOCK:
+      return spwm_create_blank_clock_row_select_setter(h);
+    default:
+      return NULL;
+  }
+}
+
+RowAddressSetter *CreateLegacyRowAddressSetter(int double_rows,
+                                               const HardwareMapping &h,
+                                               int row_address_type) {
+  switch (row_address_type) {
+    case 0:
+      return new DirectRowAddressSetter(double_rows, h);
+    case 1:
+      return new ShiftRegisterRowAddressSetter(double_rows, h);
+    case 2:
+      return new DirectABCDLineRowAddressSetter(double_rows, h);
+    case 3:
+      return new ABCShiftRegisterRowAddressSetter(double_rows, h);
+    case 4:
+      return new SM5266RowAddressSetter(double_rows, h);
+    case 5:
+      return new B707ShiftRegisterRowAddressSetter(double_rows, h);
+    default:
+      assert(0);  // unexpected type.
+      return NULL;
+  }
+}
+
 }
 
 const struct HardwareMapping *Framebuffer::hardware_mapping_ = NULL;
@@ -325,6 +355,7 @@ RowAddressSetter *Framebuffer::row_setter_ = NULL;
 Framebuffer::Framebuffer(int rows, int columns, int parallel,
                          int scan_mode,
                          const char *led_sequence, bool inverse_color,
+                         bool allow_large_spwm_rows,
                          PixelDesignatorMap **mapper)
   : rows_(rows),
     parallel_(parallel),
@@ -338,7 +369,8 @@ Framebuffer::Framebuffer(int rows, int columns, int parallel,
     shared_mapper_(mapper) {
   assert(hardware_mapping_ != NULL);   // Called InitHardwareMapping() ?
   assert(shared_mapper_ != NULL);  // Storage should be provided by RGBMatrix.
-  assert(rows_ >=4 && rows_ <= 64 && rows_ % 2 == 0);
+  assert(rows_ >= 4 && rows_ % 2 == 0);
+  assert(rows_ <= (allow_large_spwm_rows ? 128 : 64));
   if (parallel > hardware_mapping_->max_parallel_chains) {
     fprintf(stderr, "The %s GPIO mapping only supports %d parallel chain%s, "
             "but %d was requested.\n", hardware_mapping_->name,
@@ -431,25 +463,21 @@ Framebuffer::~Framebuffer() {
 }
 
 /* static */ void Framebuffer::InitGPIO(GPIO *io, int rows, int parallel,
+                                        const char *panel_type,
                                         bool allow_hardware_pulsing,
                                         int pwm_lsb_nanoseconds,
                                         int dither_bits,
-                                        int row_address_type) {
-  if (sOutputEnablePulser != NULL)
+                                        int row_address_type,
+                                        int spwm_row_address_type) {
+  if (sMatrixGpioInitialized)
     return;  // already initialized.
 
   const struct HardwareMapping &h = *hardware_mapping_;
   const int double_rows = rows / SUB_PANELS_;
+  const bool is_spwm_panel = spwm_is_panel_type(panel_type);
 
-  if (Rp1RioShouldActivate(h.name, row_address_type, parallel)) {
-    Rp1RioInitOrDie(h, double_rows, parallel, pwm_lsb_nanoseconds, dither_bits,
-                    row_address_type);
-    return;
-  }
-
-  if (Rp1PioShouldActivate(h.name, row_address_type, parallel)) {
-    Rp1PioInitOrDie(h, double_rows, parallel, pwm_lsb_nanoseconds, dither_bits,
-                    row_address_type);
+  if (Rp1BackendInitIfNeeded(h, double_rows, parallel, pwm_lsb_nanoseconds,
+                             dither_bits, row_address_type, panel_type)) {
     return;
   }
 
@@ -475,35 +503,24 @@ Framebuffer::~Framebuffer() {
     all_used_bits |= h.p5_r1 | h.p5_g1 | h.p5_b1 | h.p5_r2 | h.p5_g2 | h.p5_b2;
   }
 
-  switch (row_address_type) {
-  case 0:
-    row_setter_ = new DirectRowAddressSetter(double_rows, h);
-    break;
-  case 1:
-    row_setter_ = new ShiftRegisterRowAddressSetter(double_rows, h);
-    break;
-  case 2:
-    row_setter_ = new DirectABCDLineRowAddressSetter(double_rows, h);
-    break;
-  case 3:
-    row_setter_ = new ABCShiftRegisterRowAddressSetter(double_rows, h);
-    break;
-  case 4:
-    row_setter_ = new SM5266RowAddressSetter(double_rows, h);
-    break;
-  case 5:
-    row_setter_ = new B707ShiftRegisterRowAddressSetter(double_rows, h);
-    break;
+  if (is_spwm_panel) {
+    spwm_set_parallel_chains(parallel);
+    // SPWM keeps the panel profile and row transport separate: panel_type
+    // selects init/register/OE behavior, while --led-spwm-row-addr-type
+    // selects the row transport helper used during refresh.
+    row_setter_ =
+        CreateSpwmRowTransportSetter(double_rows, h, spwm_row_address_type);
+  }
 
-
-  default:
-    assert(0);  // unexpected type.
+  if (row_setter_ == NULL) {
+    row_setter_ =
+        CreateLegacyRowAddressSetter(double_rows, h, row_address_type);
   }
 
   all_used_bits |= row_setter_->need_bits();
 
   // Adafruit HAT identified by the same prefix.
-  const bool is_some_adafruit_hat = (0 == strncmp(h.name, "adafruit-hat",
+  const bool is_some_adafruit_hat = (0 == strncasecmp(h.name, "adafruit-hat",
                                                   strlen("adafruit-hat")));
   // Initialize outputs, make sure that all of these are supported bits.
   const gpio_bits_t result = io->InitOutputs(all_used_bits,
@@ -516,9 +533,12 @@ Framebuffer::~Framebuffer() {
     bitplane_timings.push_back(timing_ns);
     if (b >= dither_bits) timing_ns *= 2;
   }
-  sOutputEnablePulser = PinPulser::Create(io, h.output_enable,
-                                          allow_hardware_pulsing,
-                                          bitplane_timings);
+  if (!spwm_is_panel_type(panel_type)) {
+    sOutputEnablePulser = PinPulser::Create(io, h.output_enable,
+                                            allow_hardware_pulsing,
+                                            bitplane_timings);
+  }
+  sMatrixGpioInitialized = true;
 }
 
 // NOTE: first version for panel initialization sequence, need to refine
@@ -608,24 +628,28 @@ static void InitFM6127(GPIO *io, const struct HardwareMapping &h, int columns) {
 
 /*static*/ void Framebuffer::InitializePanels(GPIO *io,
                                               const char *panel_type,
-                                              int columns) {
+                                              int columns,
+                                              int spwm_row_address_type,
+                                              int spwm_scan_rows) {
+  const bool spwm_panel_handled =
+      spwm_initialize_panel_type(panel_type, columns,
+                                 spwm_row_address_type,
+                                 spwm_scan_rows);
+
   if (!panel_type || panel_type[0] == '\0') return;
-  if (Rp1RioIsActive()) {
-    Rp1RioInitializePanels(*hardware_mapping_, panel_type, columns);
+  if (Rp1BackendInitializePanelsIfActive(*hardware_mapping_, panel_type,
+                                         columns)) {
     return;
   }
-  if (Rp1PioIsActive()) {
-    Rp1PioInitializePanels(*hardware_mapping_, panel_type, columns);
-    return;
-  }
+
   if (strncasecmp(panel_type, "fm6126", 6) == 0) {
     InitFM6126(io, *hardware_mapping_, columns);
-  }
-  else if (strncasecmp(panel_type, "fm6127", 6) == 0) {
+  } else if (strncasecmp(panel_type, "fm6127", 6) == 0) {
     InitFM6127(io, *hardware_mapping_, columns);
+
   }
   // else if (strncasecmp(...))  // more init types
-  else {
+  else if (!spwm_panel_handled) {
     fprintf(stderr, "Unknown panel type '%s'; typo ?\n", panel_type);
   }
 }
@@ -822,7 +846,10 @@ gpio_bits_t Framebuffer::GetGpioFromLedSequence(char col,
                                                 gpio_bits_t default_g,
                                                 gpio_bits_t default_b) {
   const char *pos = strchr(led_sequence, col);
-  if (pos == NULL) pos = strchr(led_sequence, tolower(col));
+  if (pos == NULL) {
+    pos = strchr(led_sequence,
+                 static_cast<char>(std::tolower(static_cast<unsigned char>(col))));
+  }
   if (pos == NULL) {
     fprintf(stderr, "LED sequence '%s' does not contain any '%c'.\n",
             led_sequence, col);
@@ -930,12 +957,7 @@ void Framebuffer::CopyFrom(const Framebuffer *other) {
 }
 
 void Framebuffer::DumpToMatrix(GPIO *io, int pwm_low_bit) {
-  if (Rp1RioIsActive()) {
-    Rp1RioDumpFramebuffer(this, pwm_low_bit);
-    return;
-  }
-  if (Rp1PioIsActive()) {
-    Rp1PioDumpFramebuffer(this, pwm_low_bit);
+  if (Rp1BackendDumpFramebufferIfActive(this, pwm_low_bit)) {
     return;
   }
 
@@ -959,6 +981,13 @@ void Framebuffer::DumpToMatrix(GPIO *io, int pwm_low_bit) {
   }
 
   color_clk_mask |= h.clock;
+
+  // SPWM panels use a different protocol than the classic bitplane PWM update loop, so route to the dedicated implementation.
+  if (spwm_is_enabled()) {
+    DumpToMatrixSPWM(io, pwm_low_bit);
+    return;
+  }
+  
 
   // Depending if we do dithering, we might not always show the lowest bits.
   const int start_bit = std::max(pwm_low_bit, kBitPlanes - pwm_bits_);
@@ -1005,6 +1034,20 @@ void Framebuffer::DumpToMatrix(GPIO *io, int pwm_low_bit) {
     }
   }
 }
+
+void Framebuffer::DumpToMatrixSPWM(GPIO *io, int pwm_low_bit) {
+  const SPWM_Framebuffer_View spwm_framebuffer_view = {
+      bitplane_buffer_,
+      rows_,
+      columns_,
+      double_rows_,
+      pwm_bits_,
+      kBitPlanes,
+      pwm_low_bit,
+  };
+  spwm_dump_to_matrix(io, *hardware_mapping_, row_setter_,
+                      spwm_framebuffer_view);
+}
 }  // namespace internal
 }  // namespace rgb_matrix
 namespace rgb_matrix {
@@ -1014,12 +1057,13 @@ namespace internal {
       delete sOutputEnablePulser;
       sOutputEnablePulser = NULL;
     }
-    Rp1RioDeinit();
-    Rp1PioDeinit();
+    Rp1BackendDeinit();
     if (row_setter_ != NULL) {
       delete row_setter_;
       row_setter_ = NULL;
     }
+    sMatrixGpioInitialized = false;
+    spwm_set_enabled(false);
   }
 }
 }
