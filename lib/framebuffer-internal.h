@@ -108,7 +108,8 @@ public:
                        int spwm_row_address_type);
   static void InitializePanels(GPIO *io, const char *panel_type, int columns,
                                int spwm_row_address_type,
-                               int spwm_scan_rows);
+                               int spwm_scan_rows,
+                               int spwm_register_config);
   // Reset internal static globals so InitGPIO() can re-run with new params.
   static void ResetGlobals();
 

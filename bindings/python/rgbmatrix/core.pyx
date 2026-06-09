@@ -160,7 +160,11 @@ cdef class RGBMatrixOptions:
 
     property spwm_scan_rows:
         def __get__(self): return self.__options.spwm_scan_rows
-        def __set__(self, uint8_t value): self.__options.spwm_scan_rows = value
+        def __set__(self, int value): self.__options.spwm_scan_rows = value
+
+    property spwm_register_config:
+        def __get__(self): return self.__options.spwm_register_config
+        def __set__(self, int value): self.__options.spwm_register_config = value
 
     property disable_hardware_pulsing:
         def __get__(self): return self.__options.disable_hardware_pulsing

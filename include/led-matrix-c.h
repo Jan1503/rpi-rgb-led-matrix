@@ -130,6 +130,11 @@ struct RGBLedMatrixOptions {
    */
   int spwm_scan_rows;  /* Corresponding flag: --led-spwm-scan */
 
+  /* SPWM register payload variant. -1 keeps panel-specific automatic
+   * selection; 0 and 1 force known register blocks.
+   */
+  int spwm_register_config;  /* Corresponding flag: --led-spwm-register-config */
+
   /*  Type of multiplexing. 0 = direct, 1 = stripe, 2 = checker (typical 1:8)
    */
   int multiplexing;

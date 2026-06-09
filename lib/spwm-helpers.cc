@@ -257,7 +257,9 @@ SPWM_Config spwm_create_initial_config() {
       spwm_get_default_panel_profile();
   return spwm_default_profile.create_config(
       spwm_default_profile.settings,
-      spwm_default_profile.settings.default_columns);
+      spwm_default_profile.settings.default_columns,
+      SPWM_ROW_ADDRESS_TYPE_0_DIRECT_AE,
+      -1);
 }
 
 // Convert one physical shift-clock slot back to a visible framebuffer column.
@@ -2189,10 +2191,12 @@ bool spwm_is_panel_type(const char *spwm_panel_type) {
 // route framebuffer refresh through the SPWM path.
 bool spwm_initialize_panel_type(const char *spwm_panel_type, int spwm_columns,
                                 int spwm_row_address_type,
-                                int spwm_scan_rows) {
+                                int spwm_scan_rows,
+                                int spwm_register_config) {
   spwm_set_enabled(false);
   spwm_configure_panel_type(spwm_panel_type, spwm_columns,
-                            spwm_row_address_type, spwm_scan_rows);
+                            spwm_row_address_type, spwm_scan_rows,
+                            spwm_register_config);
 
   if (spwm_panel_type == nullptr || *spwm_panel_type == '\0') return false;
   if (!spwm_is_panel_type(spwm_panel_type)) return false;
@@ -2206,7 +2210,8 @@ bool spwm_initialize_panel_type(const char *spwm_panel_type, int spwm_columns,
 // the active panel width.
 void spwm_configure_panel_type(const char *spwm_panel_type, int spwm_columns,
                                int spwm_row_address_type,
-                               int spwm_scan_rows) {
+                               int spwm_scan_rows,
+                               int spwm_register_config) {
   SPWM_Runtime_State &spwm_runtime_state = spwm_get_runtime_state();
   SPWM_Auto_Tune_Control &spwm_auto_tune_control =
       spwm_get_auto_tune_control_storage();
@@ -2227,10 +2232,12 @@ void spwm_configure_panel_type(const char *spwm_panel_type, int spwm_columns,
 
   if (spwm_profile != nullptr && spwm_profile->create_config != nullptr) {
     spwm_runtime_state.config = spwm_profile->create_config(
-        spwm_runtime_state.panel_settings, spwm_columns);
+        spwm_runtime_state.panel_settings, spwm_columns,
+        spwm_row_address_type, spwm_register_config);
   } else if (spwm_default_profile.create_config != nullptr) {
     spwm_runtime_state.config = spwm_default_profile.create_config(
-        spwm_runtime_state.panel_settings, spwm_columns);
+        spwm_runtime_state.panel_settings, spwm_columns,
+        spwm_row_address_type, spwm_register_config);
   }
 
   if (spwm_profile != nullptr &&

@@ -17,7 +17,7 @@ FM6373 / DP32019B - 128x64 \
 FM6363 / DP32020A - 128x64 \
 FM6353 \
 SM16380SH - 128x64 \
-ICND1065L / 5958 - 172x86 - (slight display issue in some use cases, can be seen with dot-path library example)
+ICND1065L / 5958 - 172x86 - slight display issue in some use cases
 
 [Further discussion for SPWM panels](https://github.com/hzeller/rpi-rgb-led-matrix/issues/1866).
 

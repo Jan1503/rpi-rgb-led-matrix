@@ -9,7 +9,8 @@ namespace internal {
 
 // Factory used by a panel profile to build its runtime register layout.
 using SPWM_Config_Factory = SPWM_Config (*)(
-    const SPWM_Panel_Settings &settings, int columns);
+    const SPWM_Panel_Settings &settings, int columns,
+    int spwm_row_address_type, int spwm_register_config);
 
 // Kinds of startup actions that can appear in a panel init sequence.
 enum SPWM_Init_Step_Type {

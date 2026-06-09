@@ -11,7 +11,7 @@ OBJECTS=gpio.o led-matrix.o options-initialize.o framebuffer.o \
 	content-streamer.o content-streamer-c.o \
 	rp1/rp1_spwm_gpio.o rp1/rp1_backend.o rp1/rp1_pio_backend.o rp1/rp1_pio_support.o \
 	rp1/rp1_rio_backend.o \
-    spwm-helpers.o spwm-panel-config.o \
+    spwm-helpers.o spwm-panel-config.o spwm-panel-registers.o \
 
 TARGET=librgbmatrix
 

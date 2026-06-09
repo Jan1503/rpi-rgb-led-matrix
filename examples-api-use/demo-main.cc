@@ -57,7 +57,10 @@ private:
 // Simple 3d wireframe generator
 class WireCube : public DemoRunner {
 public:
-  WireCube(Canvas *m) : DemoRunner(m) {}
+  WireCube(RGBMatrix *m, bool use_swap_on_vsync)
+    : DemoRunner(m), matrix_(m),
+      off_screen_canvas_(use_swap_on_vsync ? m->CreateFrameCanvas() : NULL),
+      use_swap_on_vsync_(use_swap_on_vsync) {}
 
   void Run() override 
   {
@@ -90,17 +93,27 @@ public:
       // draw complete mesh with rotated vertices and color
       int vertSize = sizeof(verts)/sizeof(verts[0]);
       int edgeSize = sizeof(edges)/sizeof(edges[0]);
-      drawMesh(rotate(verts,vertSize/3,k,k/3,k/2), edges, edgeSize/2, red, grn, blu);
+      Canvas *draw_canvas = use_swap_on_vsync_ ? off_screen_canvas_ : canvas();
+      draw_canvas->Fill(0,0,0);
+      drawMesh(draw_canvas, rotate(verts,vertSize/3,k,k/3,k/2), edges,
+               edgeSize/2, red, grn, blu);
 
-      // sleep and then clear canvas
-      usleep(20*1000);
-      canvas()->Fill(0,0,0);
+      if (use_swap_on_vsync_) {
+        off_screen_canvas_ = matrix_->SwapOnVSync(off_screen_canvas_);
+        usleep(20*1000);
+      } else {
+        // sleep and then clear canvas
+        usleep(20*1000);
+        canvas()->Fill(0,0,0);
+      }
       k+=0.05;
     }
   }
 
 private:
+  RGBMatrix *const matrix_;
   FrameCanvas *off_screen_canvas_;
+  const bool use_swap_on_vsync_;
 
   double k = 0;
   double zoom = canvas()->width();
@@ -109,11 +122,12 @@ private:
   double pi = 3.14159265;
   double rad = 2*pi;
 
-  void drawMesh(double verts[], uint16_t edges[],int edgeCnt, int r, int g, int b)
+  void drawMesh(Canvas *draw_canvas, double verts[], uint16_t edges[],
+                int edgeCnt, int r, int g, int b)
   {
     // get center of the matrix
-    const int cx = canvas()->width()/2;
-    const int cy = canvas()->height()/2; 
+    const int cx = draw_canvas->width()/2;
+    const int cy = draw_canvas->height()/2; 
 
     // for every edge
     for (int i=0;i<edgeCnt*2;i+=2){
@@ -129,7 +143,8 @@ private:
         zpoints[j] = z*f;
       }
 
-      DrawLine(canvas(), cx+xpoints[0], cy+zpoints[0], cx+xpoints[1], cy+zpoints[1], Color(r, g, b));
+      DrawLine(draw_canvas, cx+xpoints[0], cy+zpoints[0],
+               cx+xpoints[1], cy+zpoints[1], Color(r, g, b));
     }
   }
 
@@ -259,6 +274,72 @@ public:
       DrawLine(canvas(), 0, 0,        width, height, Color(255, 255, 255));
       DrawLine(canvas(), 0, height, width, 0,        Color(255,   0, 255));
     }
+  }
+};
+
+class MovingLine : public DemoRunner {
+public:
+  MovingLine(RGBMatrix *m, int delay_ms, bool use_swap_on_vsync)
+    : DemoRunner(m), matrix_(m),
+      offscreen_(use_swap_on_vsync ? m->CreateFrameCanvas() : NULL),
+      delay_ms_(max(1, delay_ms)),
+      use_swap_on_vsync_(use_swap_on_vsync) {}
+
+  void Run() override {
+    const int width = canvas()->width();
+    const int height = canvas()->height();
+
+    while (!interrupt_received) {
+      for (int x = 0; x < width && !interrupt_received; ++x) {
+        Canvas *draw_canvas = BeginFrame();
+        DrawLine(draw_canvas, x, 0, x, height - 1, Color(255, 0, 0));
+        PresentFrame();
+      }
+
+      for (int y = 0; y < height && !interrupt_received; ++y) {
+        Canvas *draw_canvas = BeginFrame();
+        DrawLine(draw_canvas, 0, y, width - 1, y, Color(0, 255, 0));
+        PresentFrame();
+      }
+
+      const int diagonal_start = 1 - height;
+      const int diagonal_end = width;
+      for (int offset = diagonal_start;
+           offset < diagonal_end && !interrupt_received; ++offset) {
+        Canvas *draw_canvas = BeginFrame();
+        DrawMovingDiagonal(draw_canvas, offset, width, height);
+        PresentFrame();
+      }
+    }
+  }
+
+private:
+  RGBMatrix *const matrix_;
+  FrameCanvas *offscreen_;
+  const int delay_ms_;
+  const bool use_swap_on_vsync_;
+
+  Canvas *BeginFrame() {
+    Canvas *draw_canvas = use_swap_on_vsync_ ? offscreen_ : canvas();
+    draw_canvas->Clear();
+    return draw_canvas;
+  }
+
+  void DrawMovingDiagonal(Canvas *draw_canvas, int offset,
+                          int width, int height) {
+    for (int y = 0; y < height; ++y) {
+      const int x = y + offset;
+      if (x >= 0 && x < width) {
+        draw_canvas->SetPixel(x, y, 255, 255, 255);
+      }
+    }
+  }
+
+  void PresentFrame() {
+    if (use_swap_on_vsync_) {
+      offscreen_ = matrix_->SwapOnVSync(offscreen_);
+    }
+    usleep(delay_ms_ * 1000);
   }
 };
 
@@ -1172,7 +1253,8 @@ static int usage(const char *progname) {
           "\t9  - Volume bars (-m <time-step-ms>)\n"
           "\t10 - Evolution of color (-m <time-step-ms>)\n"
           "\t11 - Brightness pulse generator\n"
-          "\t12 - Colorful rotating 3d cube\n");
+          "\t12 - Colorful rotating 3d cube [direct|swap]\n"
+          "\t13 - Moving vertical, horizontal, and diagonal lines [direct|swap] (-m <time-step-ms>)\n");
   fprintf(stderr, "Example:\n\t%s -D 1 runtext.ppm\n"
           "Scrolls the runtext until Ctrl-C is pressed\n", progname);
   return 1;
@@ -1290,9 +1372,41 @@ int main(int argc, char *argv[]) {
       demo_runner = new BrightnessPulseGenerator(matrix);
       break;
       
-    case 12:
-      demo_runner = new WireCube(canvas);
+    case 12: {
+      bool use_swap_on_vsync = false;
+      if (demo_parameter) {
+        if (strcmp(demo_parameter, "direct") == 0) {
+          use_swap_on_vsync = false;
+        } else if (strcmp(demo_parameter, "swap") == 0 ||
+                   strcmp(demo_parameter, "vsync") == 0) {
+          use_swap_on_vsync = true;
+        } else {
+          fprintf(stderr,
+                  "Demo 12 optional parameter must be 'direct', 'swap', or 'vsync'\n");
+          return 1;
+        }
+      }
+      demo_runner = new WireCube(matrix, use_swap_on_vsync);
       break;
+    }
+
+    case 13: {
+      bool use_swap_on_vsync = true;
+      if (demo_parameter) {
+        if (strcmp(demo_parameter, "direct") == 0) {
+          use_swap_on_vsync = false;
+        } else if (strcmp(demo_parameter, "swap") == 0 ||
+                   strcmp(demo_parameter, "vsync") == 0) {
+          use_swap_on_vsync = true;
+        } else {
+          fprintf(stderr,
+                  "Demo 13 optional parameter must be 'direct', 'swap', or 'vsync'\n");
+          return 1;
+        }
+      }
+      demo_runner = new MovingLine(matrix, scroll_ms, use_swap_on_vsync);
+      break;
+    }
   }
 
   if (demo_runner == NULL)

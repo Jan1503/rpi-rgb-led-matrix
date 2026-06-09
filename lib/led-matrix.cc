@@ -366,6 +366,7 @@ RGBMatrix::Options::Options() :
   row_address_type(0),
   spwm_row_address_type(0),
   spwm_scan_rows(0),
+  spwm_register_config(-1),
   multiplexing(0),
 
 #ifdef DISABLE_HARDWARE_PULSES
@@ -422,6 +423,7 @@ static void PrintOptions(const RGBMatrix::Options &o) {
   P_INT(row_address_type);
   P_INT(spwm_row_address_type);
   P_INT(spwm_scan_rows);
+  P_INT(spwm_register_config);
   P_INT(multiplexing);
   P_BOOL(disable_hardware_pulsing);
   P_BOOL(show_refresh_rate);
@@ -549,7 +551,8 @@ void RGBMatrix::Impl::SetGPIO(GPIO *io, bool start_thread) {
     Framebuffer::InitializePanels(io_, params_.panel_type,
                                   params_.cols * params_.chain_length,
                                   params_.spwm_row_address_type,
-                                  params_.spwm_scan_rows);
+                                  params_.spwm_scan_rows,
+                                  params_.spwm_register_config);
   }
   if (start_thread) {
     StartRefresh();

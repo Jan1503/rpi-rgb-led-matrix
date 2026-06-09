@@ -88,6 +88,12 @@ public struct RGBLedMatrixOptions
     public int SpwmScanRows = 0;
 
     /// <summary>
+    /// SPWM register payload variant. -1 keeps panel-specific automatic
+    /// selection, while 0 and 1 force known register blocks.
+    /// </summary>
+    public int SpwmRegisterConfig = -1;
+
+    /// <summary>
     /// Type of multiplexing.
     /// </summary>
     public Multiplexing Multiplexing = Multiplexing.Direct;

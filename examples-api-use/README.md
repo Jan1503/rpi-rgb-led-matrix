@@ -102,14 +102,6 @@ page.
    Shows single dot or leaves a trail with length passed with `-t` option
    (think of 'snake').
    Can move around the pixel with W=Up, S=Down, A=Left, D=Right keys.
- * [dot-path](./dot-path.cc) Displays a single pixel moving
-   vertically, horizontally, then diagonally. Helpful for spotting frame merge,
-   tearing, or row-order issues in slow-motion video. Use `-m swap` for
-   `SwapOnVSync()` updates or `-m direct` for live canvas updates. Use
-   `-p vertical`, `-p horizontal`, or `-p diagonal` to show only one path, and
-   `-s <position>` to choose where that path starts before wrapping around.
-   Use `-x <column>` for the vertical path column or `-y <row>` for the
-   horizontal path row.
 
 Using the API
 -------------

@@ -31,6 +31,7 @@ the [toplevel readme](../README.md#changing-parameters-via-command-line-flags)
  --led-row-addr-type=<0..5>: 0 = default; 1 = AB-addressed panels; 2 = direct row select; 3 = ABC-addressed panels; 4 = ABC Shift + DE direct; 5 = shift-register row select (Default: 0).
  --led-spwm-row-addr-type=<0..2>: SPWM-only row-address transport. 0 = direct A-E row flow; 1 = shift-register blank-clock A/C row-select; 2 = shift-register blank-clock A+B with wrap-C row-select (Default: 0).
  --led-spwm-scan=<rows>    : SPWM-only scan-row override e.g 43 for 1/43 (Default: 0)
+ --led-spwm-register-config=<-1..1>: SPWM register payload variant. -1 = automatic, 0 = default, 1 = alternate (Default: -1)
  --led-show-refresh        : Show refresh rate.
  --led-inverse             : Switch if your matrix has inverse colors on.
  --led-rgb-sequence        : Switch if your matrix has led colors swapped (Default: "RGB")

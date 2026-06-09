@@ -95,6 +95,7 @@ Shared SPWM flags:
 
 - `--led-spwm-row-addr-type=<0..2>` selects the SPWM row-address transport.
 - `--led-spwm-scan=<rows>` overrides the SPWM scan-row count e.g values such as `43` for 1/43.
+- `--led-spwm-register-config=<-1..1>` selects the SPWM register payload variant. `-1` keeps the automatic panel default, `0` forces the default block, and `1` forces the alternate block.
 
 [SPWM Tuning Guide](./spwm.md)
 
@@ -402,9 +403,10 @@ two chained panels, so then you'd use
 
 --led-spwm-row-addr-type=<0..2>: SPWM row select. 0 = direct A-E row flow; 1 = shift-register blank-clock A/C row-select; 2 = shift-register blank-clock A+B with wrap-C row-select (Default: 0).
 --led-spwm-scan=<rows>: SPWM-only scan-row override e.g 43 for 1/43 (Default: 0).
+--led-spwm-register-config=<-1..1>: SPWM register payload variant. -1 = automatic, 0 = default, 1 = alternate (Default: -1).
 ```
 
-For SPWM panels, `--led-panel-type` selects the panel profile, `--led-spwm-row-addr-type` selects the SPWM row-address path, and `--led-spwm-scan` is only needed when the shift-register path needs a non-default scan count.
+For SPWM panels, `--led-panel-type` selects the panel profile, `--led-spwm-row-addr-type` selects the SPWM row-address path, `--led-spwm-scan` is only needed when the shift-register path needs a non-default scan count, and `--led-spwm-register-config` can override panel-specific register variants.
 
 This option is useful for certain 64x64 or 32x16 panels. For 64x64 panels,
 that only have an `A` and `B` address line, you'd use `--led-row-addr-type=1`.

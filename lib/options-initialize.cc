@@ -193,6 +193,9 @@ static bool FlagInit(int &argc, char **&argv,
       if (ConsumeIntFlag("spwm-scan", it, end,
                          &mopts->spwm_scan_rows, &err))
         continue;
+      if (ConsumeIntFlag("spwm-register-config", it, end,
+                         &mopts->spwm_register_config, &err))
+        continue;
       if (ConsumeIntFlag("limit-refresh", it, end,
                          &mopts->limit_refresh_rate_hz, &err))
         continue;
@@ -356,7 +359,9 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           "(Default: 0).\n\n"
           "\t--led-spwm-row-addr-type=<0..2>: SPWM-only row-address transport. 0 = direct A-E row flow; 1 = shift-register blank-clock A/C row-select; 2 = shift-register blank-clock A+B with wrap-C row-select "
           "(Default: 0).\n"
-          "\t--led-spwm-scan=<rows>    : SPWM-only scan-row override e.g 43 for 1/43 (Default: %d).\n\n"
+          "\t--led-spwm-scan=<rows>    : SPWM-only scan-row override e.g 43 for 1/43 (Default: %d).\n"
+          "\t--led-spwm-register-config=<-1..1>: SPWM register payload variant. -1 = automatic, 0 = default, 1 = alternate "
+          "(Default: %d).\n\n"
           "\t--led-%sshow-refresh        : %show refresh rate.\n"
           "\t--led-limit-refresh=<Hz>  : Limit refresh rate to this frequency in Hz. Useful to keep a\n"
           "\t                            constant refresh rate on loaded system. 0=no limit. Default: %d\n"
@@ -377,7 +382,7 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
           available_mappers.c_str(),
           internal::Framebuffer::kBitPlanes, d.pwm_bits,
           d.brightness, d.scan_mode,
-          d.spwm_scan_rows,
+          d.spwm_scan_rows, d.spwm_register_config,
           d.show_refresh_rate ? "no-" : "", d.show_refresh_rate ? "Don't s" : "S",
           d.limit_refresh_rate_hz,
           d.inverse_colors ? "no-" : "",    d.inverse_colors ? "off" : "on",
@@ -473,6 +478,11 @@ bool RGBMatrix::Options::Validate(std::string *err_in) const {
 
   if (spwm_scan_rows < 0) {
     err->append("SPWM scan row count must be 0 (use rows/2) or a positive number.\n");
+    success = false;
+  }
+
+  if (spwm_register_config < -1 || spwm_register_config > 1) {
+    err->append("SPWM register config values can be -1 (automatic), 0 (default register block), or 1 (alternate register block).\n");
     success = false;
   }
 

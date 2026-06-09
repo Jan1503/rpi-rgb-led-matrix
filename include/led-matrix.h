@@ -131,6 +131,10 @@ public:
     // panels with non-1/32 scan receivers to wrap on a different pulse count.
     int spwm_scan_rows;  // Flag --led-spwm-scan
 
+    // SPWM register payload variant. -1 keeps panel-specific automatic
+    // selection, while 0 and 1 force known register blocks.
+    int spwm_register_config;  // Flag --led-spwm-register-config
+
     // Type of multiplexing. 0 = direct, 1 = stripe, 2 = checker,...
     // Flag: --led-multiplexing
     int multiplexing;

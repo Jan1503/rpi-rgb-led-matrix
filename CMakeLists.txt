@@ -46,6 +46,7 @@ set(RGBMATRIX_SOURCES
     ${RGBMATRIX_SOURCE_DIR}/rp1/rp1_rio_backend.cc
     ${RGBMATRIX_SOURCE_DIR}/spwm-helpers.cc
     ${RGBMATRIX_SOURCE_DIR}/spwm-panel-config.cc
+    ${RGBMATRIX_SOURCE_DIR}/spwm-panel-registers.cc
     ${RGBMATRIX_SOURCE_DIR}/thread.cc
 )
 cmake_print_variables(RGBMATRIX_SOURCES)

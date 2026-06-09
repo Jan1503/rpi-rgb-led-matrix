@@ -184,13 +184,15 @@ RowAddressSetter *spwm_create_blank_clock_row_select_setter(
 // the panel type is handled by the SPWM path.
 bool spwm_initialize_panel_type(const char *panel_type, int columns,
                                 int spwm_row_address_type,
-                                int spwm_scan_rows);
+                                int spwm_scan_rows,
+                                int spwm_register_config);
 
 // Load the selected panel profile into the runtime state, rebuild any
 // width-dependent register layout, and then apply environment overrides.
 void spwm_configure_panel_type(const char *panel_type, int columns,
                                int spwm_row_address_type,
-                               int spwm_scan_rows);
+                               int spwm_scan_rows,
+                               int spwm_register_config);
 
 // Return the currently active panel settings after profile selection and
 // override handling.
