@@ -1,3 +1,47 @@
+rpi-rgb-led-matrix - SPWM Expeimental Support
+==================================================
+
+These newer panel types currently have limited and experimental support.
+SPWM panels currently supported by this tree:
+
+- FM6373 + DP32019B direct row selection: \
+  `--led-panel-type=fm6373 --led-spwm-row-addr-type=0`
+<br>
+
+- FM6353: \
+  `--led-panel-type=fm6353 --led-spwm-row-addr-type=1`
+<br>
+
+- FM6363 + DP32020A shift-register row selection: \
+  `--led-panel-type=fm6363 --led-spwm-row-addr-type=1`
+<br>
+
+- SM16380SH \
+  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=0`\
+  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=1`\
+  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=1 --led-spwm-register-config=0`\
+  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=1 --led-spwm-register-config=1`
+<br>
+
+- ICND1065L + shift-register row selection: \
+  `--led-panel-type=icnd1065l --led-rows=86 --led-cols=172 --led-spwm-row-addr-type=2 --led-spwm-scan=43`
+  <br><br>
+
+Shared SPWM flags:
+
+- `--led-spwm-row-addr-type=<0..2>` selects the SPWM row-address transport.
+- `--led-spwm-register-config=<0..1>` selects the SPWM register payload variant where applicable, example SM16380SH test both if any display glitches occur.
+- `--led-spwm-scan=<rows>` overrides the SPWM scan-row count e.g values such as `43` for 1/43. Tested only with ICND1065L
+
+[SPWM Tuning Guide](./spwm.md)
+
+SPWM panel discussion and resources - https://github.com/hzeller/rpi-rgb-led-matrix/issues/1866
+
+SPWM First discussion - https://github.com/hzeller/rpi-rgb-led-matrix/issues/466
+
+---
+
+
 Controlling RGB LED display with Raspberry Pi GPIO
 ==================================================
 
@@ -63,46 +107,7 @@ that all supported panels there should work with this library, or could work
 with minimal work to create a pixel mapper.
 Please do refer to --led-multiplexing=<0..17> mentioned below and try all values. \
 2025/11 update: DMD_STM32 has started adding experimental support for some PWM panels.
-These should be labelled as "special" in the table above. They are not supported by this
-lib, as it only supports non PWM panels (until someone contributes PWM support).
-
-PWM / E-PWM / S-PWM Panels
-----------------------
-These newer panel types currently have limited and experimental support.
-SPWM panels currently supported by this tree:
-
-- FM6373 + DP32019B direct row selection: \
-  `--led-panel-type=fm6373 --led-spwm-row-addr-type=0`
-<br>
-
-- ICND1065L + shift-register row selection: \
-  `--led-panel-type=icnd1065l --led-rows=86 --led-cols=172 --led-spwm-row-addr-type=2 --led-spwm-scan=43`
-<br>
-
-- FM6353: \
-  `--led-panel-type=fm6353 --led-spwm-row-addr-type=1`
-<br>
-
-- FM6363 + DP32020A shift-register row selection: \
-  `--led-panel-type=fm6363 --led-spwm-row-addr-type=1`
-<br>
-
-- SM16380SH \
-  `--led-panel-type=sm16380sh --led-spwm-row-addr-type=0`
-<br>
-
-Shared SPWM flags:
-
-- `--led-spwm-row-addr-type=<0..2>` selects the SPWM row-address transport.
-- `--led-spwm-scan=<rows>` overrides the SPWM scan-row count e.g values such as `43` for 1/43.
-- `--led-spwm-register-config=<-1..1>` selects the SPWM register payload variant. `-1` keeps the automatic panel default, `0` forces the default block, and `1` forces the alternate block.
-
-[SPWM Tuning Guide](./spwm.md)
-
-SPWM panel discussion and resources - https://github.com/hzeller/rpi-rgb-led-matrix/issues/1866
-
-SPWM First discussion - https://github.com/hzeller/rpi-rgb-led-matrix/issues/466
-
+These should be labelled as "special" in the table above.
 
 Raspberry Pi 1-5 supported
 ------------------------------
