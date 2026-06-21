@@ -807,14 +807,101 @@ void Framebuffer::SetPixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
   }
 }
 
-void Framebuffer::SetPixels(int x, int y, int width, int height, Color *colors) {
-  for (int iy = 0; iy < height; ++iy) {
-    for (int ix = 0; ix < width; ++ix) {
-      SetPixel(x + ix, y + iy, colors->r, colors->g, colors->b);
-      ++colors;
+void Framebuffer::SetPixels(int x, int y, int width, int height, Color* colors) {
+  // Fast bulk path: the pixel-mapper stores PixelDesignators row-major, so we do a
+  // single get() per ROW and then index linearly across the row (same approach as
+  // SubFill()), instead of a per-pixel get(x,y) lookup + SetPixel() call. The map
+  // colour + bit-plane write per pixel is identical to SetPixel(), so the output is
+  // unchanged - this only removes the per-pixel lookup/call overhead (big on large
+  // panels, where this loop runs width*height times every frame).
+  const int fb_width = (*shared_mapper_)->width();
+  const int fb_height = (*shared_mapper_)->height();
+  const int min_bit_plane = kBitPlanes - pwm_bits_;
+
+  for (int iy = 0; iy < height; ++iy, colors += width) {
+    const int py = y + iy;
+    if (py < 0 || py >= fb_height) continue;
+
+    const int start_x = x < 0 ? 0 : x;
+    const int x_end = (x + width < fb_width) ? (x + width) : fb_width;
+    if (start_x >= x_end) continue;
+
+    const PixelDesignator* row = (*shared_mapper_)->get(start_x, py);
+    if (row == NULL) continue;
+
+    for (int px = start_x; px < x_end; ++px) {
+      const PixelDesignator* d = row + (px - start_x);
+      const long pos = d->gpio_word;
+      if (pos < 0) continue;  // non-used pixel marker.
+
+      const Color& c = colors[px - x];
+      uint16_t red, green, blue;
+      MapColors(c.r, c.g, c.b, &red, &green, &blue);
+
+      gpio_bits_t* bits = bitplane_buffer_ + pos + (columns_ * min_bit_plane);
+      const gpio_bits_t r_bits = d->r_bit;
+      const gpio_bits_t g_bits = d->g_bit;
+      const gpio_bits_t b_bits = d->b_bit;
+      const gpio_bits_t designator_mask = d->mask;
+      for (uint16_t mask = 1 << min_bit_plane; mask != 1 << kBitPlanes; mask <<= 1) {
+        gpio_bits_t color_bits = 0;
+        if (red & mask)   color_bits |= r_bits;
+        if (green & mask) color_bits |= g_bits;
+        if (blue & mask)  color_bits |= b_bits;
+        *bits = (*bits & designator_mask) | color_bits;
+        bits += columns_;
+      }
     }
   }
 }
+
+void Framebuffer::SetPixelsBgra(int x, int y, int width, int height, const uint8_t* bgra) {
+  // Same per-row linear designator walk as SetPixels(), but reads pixels straight from a
+  // 32-bit BGRA buffer (4 bytes/pixel: B,G,R,A). This lets the host hand over a SkiaSharp
+  // bitmap pointer directly - no managed per-pixel conversion loop and no intermediate
+  // Color[] copy. Channel order matches the previous host conversion (MapColors(B,G,R));
+  // the LED RGB sequence option still remaps to the panel.
+  const int fb_width = (*shared_mapper_)->width();
+  const int fb_height = (*shared_mapper_)->height();
+  const int min_bit_plane = kBitPlanes - pwm_bits_;
+
+  for (int iy = 0; iy < height; ++iy, bgra += (size_t)width * 4) {
+    const int py = y + iy;
+    if (py < 0 || py >= fb_height) continue;
+
+    const int start_x = x < 0 ? 0 : x;
+    const int x_end = (x + width < fb_width) ? (x + width) : fb_width;
+    if (start_x >= x_end) continue;
+
+    const PixelDesignator* row = (*shared_mapper_)->get(start_x, py);
+    if (row == NULL) continue;
+
+    for (int px = start_x; px < x_end; ++px) {
+      const PixelDesignator* d = row + (px - start_x);
+      const long pos = d->gpio_word;
+      if (pos < 0) continue;  // non-used pixel marker.
+
+      const uint8_t* p = bgra + (size_t)(px - x) * 4;
+      uint16_t red, green, blue;
+      MapColors(p[0], p[1], p[2], &red, &green, &blue);
+
+      gpio_bits_t* bits = bitplane_buffer_ + pos + (columns_ * min_bit_plane);
+      const gpio_bits_t r_bits = d->r_bit;
+      const gpio_bits_t g_bits = d->g_bit;
+      const gpio_bits_t b_bits = d->b_bit;
+      const gpio_bits_t designator_mask = d->mask;
+      for (uint16_t mask = 1 << min_bit_plane; mask != 1 << kBitPlanes; mask <<= 1) {
+        gpio_bits_t color_bits = 0;
+        if (red & mask)   color_bits |= r_bits;
+        if (green & mask) color_bits |= g_bits;
+        if (blue & mask)  color_bits |= b_bits;
+        *bits = (*bits & designator_mask) | color_bits;
+        bits += columns_;
+      }
+    }
+  }
+}
+
 // Strange LED-mappings such as RBG or so are handled here.
 gpio_bits_t Framebuffer::GetGpioFromLedSequence(char col,
                                                 const char *led_sequence,

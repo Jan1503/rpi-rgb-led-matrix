@@ -882,6 +882,10 @@ void FrameCanvas::SetPixels(int x, int y, int width, int height,
                          Color *colors) {
   frame_->SetPixels(x, y, width, height, colors);
 }
+void FrameCanvas::SetPixelsBgra(int x, int y, int width, int height,
+  const uint8_t* bgra) {
+  frame_->SetPixelsBgra(x, y, width, height, bgra);
+}
 void FrameCanvas::Clear() { return frame_->Clear(); }
 void FrameCanvas::Fill(uint8_t red, uint8_t green, uint8_t blue) {
   frame_->Fill(red, green, blue);

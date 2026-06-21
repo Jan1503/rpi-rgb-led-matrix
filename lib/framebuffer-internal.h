@@ -131,6 +131,9 @@ public:
   int height() const;
   void SetPixel(int x, int y, uint8_t red, uint8_t green, uint8_t blue);
   void SetPixels(int x, int y, int width, int height, Color *colors);
+  // Bulk upload straight from a 32-bit BGRA buffer (e.g. a SkiaSharp bitmap), avoiding a
+  // host-side per-pixel conversion + intermediate Color[] copy. Byte order per pixel: B,G,R,A.
+  void SetPixelsBgra(int x, int y, int width, int height, const uint8_t* bgra);
   void Clear();
   void Fill(uint8_t red, uint8_t green, uint8_t blue);
   void SubFill(int x, int y, int width, int height, uint8_t red, uint8_t green, uint8_t blue);

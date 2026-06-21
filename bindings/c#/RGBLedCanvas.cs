@@ -58,6 +58,18 @@ public class RGBLedCanvas
     }
 
     /// <summary>
+    /// Copies pixels from a packed 32-bit BGRA buffer (4 bytes/pixel: B,G,R,A, e.g. a SkiaSharp bitmap)
+    /// to a rectangle on the canvas, in one native pass (no managed per-pixel conversion).
+    /// </summary>
+    /// <param name="x">The X coordinate of the top-left pixel.</param>
+    /// <param name="y">The Y coordinate of the top-left pixel.</param>
+    /// <param name="width">Width of the rectangle.</param>
+    /// <param name="height">Height of the rectangle.</param>
+    /// <param name="bgra">Pointer to the BGRA pixel buffer (width*height*4 bytes).</param>
+    public void SetPixelsBgra(int x, int y, int width, int height, IntPtr bgra) =>
+        led_canvas_set_pixels_bgra(_canvas, x, y, width, height, bgra);
+
+    /// <summary>
     /// Sets the color of the entire canvas.
     /// </summary>
     /// <param name="color">New canvas color.</param>

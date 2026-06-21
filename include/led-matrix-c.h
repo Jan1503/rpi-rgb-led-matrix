@@ -330,6 +330,12 @@ void led_canvas_set_pixel(struct LedCanvas *canvas, int x, int y,
 void led_canvas_set_pixels(struct LedCanvas *canvas, int x, int y,
                            int width, int height, struct Color *colors);
 
+/** Copies pixels from a 32-bit BGRA buffer (4 bytes/pixel: B,G,R,A) to the
+ * rectangle at (x, y) with size (width, height). Lets a host upload a packed
+ * BGRA framebuffer (e.g. a SkiaSharp bitmap) without a per-pixel conversion. */
+void led_canvas_set_pixels_bgra(struct LedCanvas* canvas, int x, int y,
+  int width, int height, const uint8_t* bgra);
+
 /** Clear screen (black). */
 void led_canvas_clear(struct LedCanvas *canvas);
 
