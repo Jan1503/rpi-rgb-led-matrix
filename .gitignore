@@ -10,3 +10,5 @@
 
 # python
 __pycache__/
+/.vs
+/out/build/x64-Debug
