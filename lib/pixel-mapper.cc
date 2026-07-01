@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include <map>
+#include <vector>
 
 namespace rgb_matrix {
 namespace {
@@ -358,6 +359,90 @@ private:
   int bands_;
 };
 
+// Flexible row reordering for panels with a scrambled vertical scan map
+// (columns assumed 1:1). The visible image is split into horizontal blocks of
+// `block` rows. You type the list of WHAT YOU OBSERVED: for logical block i (in
+// order 0,1,2,...), the PHYSICAL band number where it showed up during a
+// blockstep run with the identity list. The mapper inverts that for you so the
+// image comes out in the right order. Fully tunable at runtime via the
+// --led-pixel-mapper string -> no recompile needed to try a new order.
+//
+// Param format:  RowMap:<block>,<o0>,<o1>,<o2>,...   (ALL commas, no ';' -- the
+//                flag uses ';' to separate multiple mappers, so it can't appear here)
+//   <block>      rows per block (e.g. 8). Try 8, 16, 4, 32.
+//   <o0..oN-1>   for logical block i, the physical band it currently appears at.
+//                List length must be (panel_height / block). Omit for identity.
+// How to fill it: run identity (RowMap:8,0,1,...,15) + mode=blockstep, step
+// through and note where each logical block lands, then type those numbers.
+// Example: if logical 0 lands at band 8, logical 1 at band 9, ... that's the list.
+// Tip: combine with --led-multiplexing=N and SPWM_OE_CLK_LENGTH to explore.
+class RowMapMapper : public PixelMapper {
+public:
+  RowMapMapper() : block_(8) {}
+
+  virtual const char *GetName() const { return "RowMap"; }
+
+  virtual bool SetParameters(int chain, int parallel, const char *param) {
+    block_ = 8;
+    std::vector<int> observed;
+    if (param && *param) {
+      char *pos = (char *)param;
+      long b = strtol(pos, &pos, 10);
+      if (b > 0) block_ = (int)b;
+      // The '--led-pixel-mapper' flag splits multiple mappers on ';', so the
+      // param can only use ',' internally. Skip the separator after the block.
+      if (*pos == ',' || *pos == ';' || *pos == ':') ++pos;
+      while (*pos) {
+        char *next = pos;
+        long v = strtol(pos, &next, 10);
+        if (next == pos) break;  // no number parsed
+        observed.push_back((int)v);
+        pos = next;
+        while (*pos == ',' || *pos == ' ') ++pos;
+      }
+    }
+    // Invert the observed (logical -> physical) list into the forward map
+    // (logical -> matrix block to write into). Unspecified targets stay identity.
+    const int n = (int)observed.size();
+    inv_.assign(n, -1);
+    for (int k = 0; k < n; ++k) {
+      const int p = observed[k];
+      if (p >= 0 && p < n) inv_[p] = k;
+    }
+    for (int i = 0; i < n; ++i) if (inv_[i] < 0) inv_[i] = i;
+    if (getenv("SPWM_DEBUG"))
+      fprintf(stderr, "[RowMap] block=%d, %d entries%s\n", block_, n,
+              n == 0 ? " (identity)" : "");
+    return true;
+  }
+
+  virtual bool GetSizeMapping(int matrix_width, int matrix_height,
+                              int *visible_width, int *visible_height) const {
+    *visible_width = matrix_width;
+    *visible_height = matrix_height;
+    return true;
+  }
+
+  virtual void MapVisibleToMatrix(int matrix_width, int matrix_height,
+                                  int x, int y,
+                                  int *matrix_x, int *matrix_y) const {
+    *matrix_x = x;
+    const int b = block_ > 0 ? block_ : 1;
+    const int blk = y / b;
+    const int off = y % b;
+    int mblk = blk;
+    if (blk >= 0 && blk < (int)inv_.size()) mblk = inv_[blk];
+    int my = mblk * b + off;
+    if (my < 0) my = 0;
+    if (my >= matrix_height) my = matrix_height - 1;
+    *matrix_y = my;
+  }
+
+private:
+  int block_;
+  std::vector<int> inv_;  // forward map: logical block -> matrix block
+};
+
 class RemapMapper : public PixelMapper {
 public:
   RemapMapper() {}
@@ -540,6 +625,7 @@ static MapperByName *CreateMapperMap() {
   RegisterPixelMapperInternal(result, new VerticalMapper());
   RegisterPixelMapperInternal(result, new StackToRowMapper());
   RegisterPixelMapperInternal(result, new MirrorPixelMapper());
+  RegisterPixelMapperInternal(result, new RowMapMapper());
   RegisterPixelMapperInternal(result, new RemapMapper());
   return result;
 }

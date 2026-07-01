@@ -38,6 +38,9 @@ enum SPWM_Row_Address_Type {
   SPWM_ROW_ADDRESS_TYPE_0_DIRECT_AE = 0,
   SPWM_ROW_ADDRESS_TYPE_1_SHIFTREG_BLANK_CLOCK = 1,
   SPWM_ROW_ADDRESS_TYPE_2_SHIFTREG_AB_BLANK_CLOCK = 2,
+  // HC595-chain row select (e.g. ICND2018): A=DCLK (shift clock), B=RCK (latch),
+  // C=SDIN (serial data). Shifts a one-hot row bit then latches it to the outputs.
+  SPWM_ROW_ADDRESS_TYPE_3_HC595_SHIFT_LATCH = 3,
 };
 
 struct SPWM_Panel_Settings {
@@ -45,6 +48,8 @@ struct SPWM_Panel_Settings {
 
   int default_rows;               // Default panel row count for this profile.
   int default_columns;            // Default panel column count for this profile.
+  int spwm_fields;                // Time-multiplex fields per frame (1 = normal; 2 = drivers whose
+                                  // memory holds only half the rows, e.g. FM6363 on a 128-row panel).
   int upload_channels_per_chip;   // Driver outputs per cascaded chip.
   int upload_word_bits;           // Bits shifted per grayscale word.
   int upload_chip_count;          // 0 => derive from columns/channels_per_chip.

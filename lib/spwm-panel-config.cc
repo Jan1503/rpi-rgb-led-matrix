@@ -62,6 +62,7 @@ SPWM_Panel_Settings spwm_make_default_panel_settings() {
   SPWM_Panel_Settings spwm_settings = {};
   spwm_settings.default_rows = 64;
   spwm_settings.default_columns = 128;
+  spwm_settings.spwm_fields = 1;  // single field unless a profile opts into time-multiplex.
   spwm_settings.upload_channels_per_chip = 16;
   spwm_settings.upload_word_bits = 16;
   spwm_settings.upload_chip_count = 0;  // derive from columns / channels_per_chip
@@ -230,6 +231,20 @@ static const SPWM_Panel_Settings SPWM_FM6363_SETTINGS = []() {
   return spwm_settings;
 }();
 
+// FM6363 on a 128-row panel with an ICND2018/HC595 row driver: the FM6363 grayscale
+// memory holds only 32 rows, so the 128 rows must be sent as 2 time-multiplexed
+// FIELDS per frame (spwm_fields=2). Same timing as fm6363, but no end-of-frame hold
+// / inter-frame sleep so the doubled field-rate keeps a flicker-free refresh (~60 Hz).
+// Use with --led-spwm-row-addr-type=3 (one-hot HC595) and the RowMap pixel-mapper for
+// this panel's row order. Kept as a separate type so the plain 128x64 fm6363 is unchanged.
+static const SPWM_Panel_Settings SPWM_FM6363S_SETTINGS = []() {
+  SPWM_Panel_Settings spwm_settings = SPWM_FM6363_SETTINGS;
+  spwm_settings.spwm_fields = 2;
+  spwm_settings.end_of_frame_extra_row_cycles = 0;
+  spwm_settings.frame_end_sleep_us = 0;
+  return spwm_settings;
+}();
+
 // FM6363 frame start: emit the wake-up LAT bursts, each with an optional
 // trailing LAT-low spacer count, then stream the five fixed control registers
 // with their per-register LAT postambles.
@@ -314,6 +329,12 @@ static const SPWM_Panel_Profile SPWM_PANEL_PROFILES[] = {
      SPWM_SM16380SH_SETTINGS,
      spwm_create_sm16380sh_config,
      SPWM_SM16380SH_INIT_SEQUENCE},
+    // "fm6363s" must precede "fm6363": the lookup is a prefix match, so the longer,
+    // more-specific name has to be tried first.
+    {"fm6363s",
+     SPWM_FM6363S_SETTINGS,
+     spwm_create_fm6363_config,
+     SPWM_FM6363_INIT_SEQUENCE},
     {"fm6363",
      SPWM_FM6363_SETTINGS,
      spwm_create_fm6363_config,
