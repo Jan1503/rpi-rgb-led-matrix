@@ -3,12 +3,24 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 
 namespace rgb_matrix {
 namespace internal {
 
 namespace {
+
+// Diagnostic: allow overriding a fixed 16-bit register word from the
+// environment so ghost-elimination / pre-charge / current bits can be swept at
+// runtime without recompiling. Accepts decimal or 0x-prefixed hex. Returns the
+// fallback unchanged when the variable is unset/empty.
+uint16_t spwm_env_override_u16(const char *spwm_env_name, uint16_t spwm_fallback) {
+  const char *spwm_value = getenv(spwm_env_name);
+  if (spwm_value == nullptr || *spwm_value == '\0') return spwm_fallback;
+  return static_cast<uint16_t>(strtol(spwm_value, nullptr, 0));
+}
 
 struct SPWM_Word_Sequence {
   const uint16_t *words;
@@ -460,15 +472,19 @@ static const SPWM_Register_Timing SPWM_FM6363_REGISTER_TIMINGS[] = {
 static const SPWM_Register_Config_Entry
     SPWM_FM6363_REGISTER_CONFIG0_ENTRIES[] = {
     spwm_make_fixed_register_config_entry(1, 0x1fb0),
-    spwm_make_fixed_register_config_entry(2, 0xf39c),
+    // CFG2 b00 = "eliminate text ghosting enable" (datasheet sets it; the
+    // original 0xf39c left it off). Turning it on measurably reduces the
+    // vertical green ghosting on live content with no brightness cost, and was
+    // the single most effective FM6363 register knob found (2026-07-01). The
+    // per-channel ghost-eliminate LEVEL bits had no effect in this scan setup.
+    spwm_make_fixed_register_config_entry(2, 0xf39d),
     spwm_make_fixed_register_config_entry(3, 0x20b6),
     spwm_make_fixed_register_config_entry(4, 0x1a00),
     spwm_make_fixed_register_config_entry(5, 0x7e08),
 };
-
-static const SPWM_Register_Config SPWM_FM6363_REGISTER_CONFIGS[] = {
-    {0, spwm_make_register_config_entries(SPWM_FM6363_REGISTER_CONFIG0_ENTRIES)},
-};
+// Note: FM6363 has a single register block; spwm_create_fm6363_config consumes
+// SPWM_FM6363_REGISTER_CONFIG0_ENTRIES directly (so it can apply the
+// SPWM_FM6363_REG1..5 env overrides), hence no SPWM_Register_Config wrapper here.
 
 // -------------------------------------------------------------------------------------------------
 // FM6353 register definition.
@@ -534,12 +550,58 @@ SPWM_Config spwm_create_sm16380sh_config(
       SPWM_SM16380SH_REGISTER_CONFIGS, spwm_resolved_register_config);
 }
 
+// Runtime overrides for the five FM6363 fixed control words, set by
+// spwm_set_fm6363_register_overrides (e.g. the SPWM_FM6363_REG_FILE hot-reload).
+// A value < 0 means "no override" so the env / built-in default is used.
+static int spwm_fm6363_reg_override[5] = {-1, -1, -1, -1, -1};
+
+void spwm_set_fm6363_register_overrides(const int words[5]) {
+  for (int spwm_i = 0; spwm_i < 5; ++spwm_i) {
+    spwm_fm6363_reg_override[spwm_i] = words[spwm_i];
+  }
+}
+
 SPWM_Config spwm_create_fm6363_config(
     const SPWM_Panel_Settings &spwm_settings, int spwm_columns,
-    int /*spwm_row_address_type*/, int spwm_register_config) {
-  return spwm_create_selected_register_config(
-      spwm_settings, spwm_columns, SPWM_FM6363_REGISTER_TIMINGS,
-      SPWM_FM6363_REGISTER_CONFIGS, spwm_register_config);
+    int /*spwm_row_address_type*/, int /*spwm_register_config*/) {
+  // FM6363 has a single register block (config 0). Copy it so the five fixed
+  // control words can be individually overridden from the environment
+  // (SPWM_FM6363_REG1..5) for ghost/pre-charge/current tuning without a rebuild.
+  static const char *const kEnvNames[5] = {
+      "SPWM_FM6363_REG1", "SPWM_FM6363_REG2", "SPWM_FM6363_REG3",
+      "SPWM_FM6363_REG4", "SPWM_FM6363_REG5"};
+  const size_t spwm_entry_count =
+      sizeof(SPWM_FM6363_REGISTER_CONFIG0_ENTRIES) /
+      sizeof(SPWM_FM6363_REGISTER_CONFIG0_ENTRIES[0]);
+  std::vector<SPWM_Register_Config_Entry> spwm_entries(
+      SPWM_FM6363_REGISTER_CONFIG0_ENTRIES,
+      SPWM_FM6363_REGISTER_CONFIG0_ENTRIES + spwm_entry_count);
+  const bool spwm_debug = getenv("SPWM_DEBUG") != nullptr;
+  for (SPWM_Register_Config_Entry &spwm_entry : spwm_entries) {
+    if (spwm_entry.type != SPWM_REGISTER_CONFIG_ENTRY_FIXED) continue;
+    if (spwm_entry.register_index < 1 || spwm_entry.register_index > 5) continue;
+    const uint16_t spwm_default_word = spwm_entry.fixed_word;
+    spwm_entry.fixed_word = spwm_env_override_u16(
+        kEnvNames[spwm_entry.register_index - 1], spwm_default_word);
+    // Runtime file override (SPWM_FM6363_REG_FILE) wins over env/default so the
+    // words can be swept live against real content without a restart.
+    const int spwm_runtime_override =
+        spwm_fm6363_reg_override[spwm_entry.register_index - 1];
+    if (spwm_runtime_override >= 0) {
+      spwm_entry.fixed_word = static_cast<uint16_t>(spwm_runtime_override);
+    }
+    if (spwm_debug && spwm_entry.fixed_word != spwm_default_word) {
+      fprintf(stderr, "[SPWM-DEBUG] FM6363 reg%zu overridden: 0x%04x -> 0x%04x\n",
+              spwm_entry.register_index, spwm_default_word,
+              spwm_entry.fixed_word);
+    }
+  }
+
+  const SPWM_Register_Config_Entries spwm_entry_view = {spwm_entries.data(),
+                                                        spwm_entries.size()};
+  return spwm_create_register_config(spwm_settings, spwm_columns,
+                                     SPWM_FM6363_REGISTER_TIMINGS,
+                                     spwm_entry_view);
 }
 
 SPWM_Config spwm_create_fm6353_config(

@@ -2,6 +2,7 @@
 
 #include "spwm-helpers.h"
 #include "spwm-panel-config.h"
+#include "spwm-panel-registers.h"
 #include "framebuffer-internal.h"
 
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -297,7 +300,10 @@ struct SPWM_Runtime_State {
         init_sequence(spwm_get_initial_init_sequence()),
         last_initial_oe_start_ns(0),
         target_initial_oe_start_ns(0),
-        panel_settings(spwm_get_default_panel_profile().settings) {}
+        panel_settings(spwm_get_default_panel_profile().settings),
+        rebuild_factory(nullptr),
+        rebuild_columns(0),
+        rebuild_register_config(-1) {}
 
   SPWM_Config config;
   int active_parallel_chains;
@@ -308,6 +314,11 @@ struct SPWM_Runtime_State {
   uint64_t last_initial_oe_start_ns;
   uint64_t target_initial_oe_start_ns;
   SPWM_Panel_Settings panel_settings;
+  // Context captured at configure time so the register payload can be rebuilt
+  // in-place on the render thread (see spwm_maybe_reload_fm6363_registers).
+  SPWM_Config_Factory rebuild_factory;
+  int rebuild_columns;
+  int rebuild_register_config;
 };
 
 // Return the singleton runtime state shared by SPWM setup and refresh helpers.
@@ -2231,12 +2242,17 @@ void spwm_configure_panel_type(const char *spwm_panel_type, int spwm_columns,
   spwm_apply_panel_env_overrides(&spwm_runtime_state.panel_settings);
   spwm_auto_tune_control.loaded = false;
 
-  if (spwm_profile != nullptr && spwm_profile->create_config != nullptr) {
-    spwm_runtime_state.config = spwm_profile->create_config(
-        spwm_runtime_state.panel_settings, spwm_columns,
-        spwm_row_address_type, spwm_register_config);
-  } else if (spwm_default_profile.create_config != nullptr) {
-    spwm_runtime_state.config = spwm_default_profile.create_config(
+  const SPWM_Config_Factory spwm_active_factory =
+      (spwm_profile != nullptr && spwm_profile->create_config != nullptr)
+          ? spwm_profile->create_config
+          : spwm_default_profile.create_config;
+  // Remember how to rebuild the config so live register tuning can re-run the
+  // exact same factory on the render thread without a matrix restart.
+  spwm_runtime_state.rebuild_factory = spwm_active_factory;
+  spwm_runtime_state.rebuild_columns = spwm_columns;
+  spwm_runtime_state.rebuild_register_config = spwm_register_config;
+  if (spwm_active_factory != nullptr) {
+    spwm_runtime_state.config = spwm_active_factory(
         spwm_runtime_state.panel_settings, spwm_columns,
         spwm_row_address_type, spwm_register_config);
   }
@@ -2401,6 +2417,62 @@ void spwm_wait_until_initial_oe_pulse_target() {
 // Inputs: GPIO interface, hardware mapping, row setter, and prepared bitplanes.
 // Outputs: None.
 // Side effects: Drives the full init/upload/free-run frame timing on GPIO lines.
+// Diagnostic live-tuning: when SPWM_FM6363_REG_FILE names a readable file, the
+// render thread re-reads it (throttled to ~4 Hz) and, on any change, rebuilds
+// the register payload in place so the five FM6363 control words can be swept
+// against live content without restarting the driver. This runs on the same
+// thread that consumes spwm_runtime_state.config, so the swap is race-free.
+//
+// File format: one "index=value" per line, index 1..5, value decimal or 0x-hex,
+// e.g. a single line "2=0xff9c". Any register not listed reverts to its built-in
+// / env default, so deleting a line restores the original word.
+static void spwm_maybe_reload_fm6363_registers() {
+  static const char *const spwm_reg_file = getenv("SPWM_FM6363_REG_FILE");
+  if (spwm_reg_file == nullptr || spwm_reg_file[0] == '\0') return;
+
+  SPWM_Runtime_State &spwm_runtime_state = spwm_get_runtime_state();
+  if (spwm_runtime_state.rebuild_factory == nullptr) return;
+
+  // Throttle filesystem polling so it never intrudes on the frame hot path.
+  static uint64_t spwm_next_check_ns = 0;
+  const uint64_t spwm_now_ns = spwm_get_monotonic_nanos();
+  if (spwm_now_ns < spwm_next_check_ns) return;
+  spwm_next_check_ns = spwm_now_ns + 250000000ULL;
+
+  struct stat spwm_stat;
+  if (stat(spwm_reg_file, &spwm_stat) != 0) return;
+  static time_t spwm_last_mtime = 0;
+  static bool spwm_seen_once = false;
+  if (spwm_seen_once && spwm_stat.st_mtime == spwm_last_mtime) return;
+  spwm_last_mtime = spwm_stat.st_mtime;
+  spwm_seen_once = true;
+
+  FILE *spwm_file = fopen(spwm_reg_file, "r");
+  if (spwm_file == nullptr) return;
+  int spwm_words[5] = {-1, -1, -1, -1, -1};
+  char spwm_line[128];
+  while (fgets(spwm_line, sizeof(spwm_line), spwm_file) != nullptr) {
+    char *spwm_eq = strchr(spwm_line, '=');
+    if (spwm_eq == nullptr) continue;
+    *spwm_eq = '\0';
+    const int spwm_idx = atoi(spwm_line);
+    if (spwm_idx < 1 || spwm_idx > 5) continue;
+    spwm_words[spwm_idx - 1] =
+        static_cast<int>(strtol(spwm_eq + 1, nullptr, 0));
+  }
+  fclose(spwm_file);
+
+  spwm_set_fm6363_register_overrides(spwm_words);
+  spwm_runtime_state.config = spwm_runtime_state.rebuild_factory(
+      spwm_runtime_state.panel_settings, spwm_runtime_state.rebuild_columns,
+      spwm_runtime_state.row_address_type,
+      spwm_runtime_state.rebuild_register_config);
+  if (getenv("SPWM_DEBUG")) {
+    fprintf(stderr, "[SPWM-DEBUG] FM6363 registers reloaded from %s\n",
+            spwm_reg_file);
+  }
+}
+
 void spwm_dump_to_matrix(GPIO *io, const HardwareMapping &h,
                          RowAddressSetter *spwm_row_setter,
                          const SPWM_Framebuffer_View &spwm_framebuffer_view) {
@@ -2408,6 +2480,9 @@ void spwm_dump_to_matrix(GPIO *io, const HardwareMapping &h,
       spwm_framebuffer_view.bitplane_buffer == nullptr) {
     return;
   }
+
+  // Pick up any live FM6363 register edits before building this frame.
+  spwm_maybe_reload_fm6363_registers();
 
   // Build the masks used throughout the frame upload and resolve the
   // logical upload geometry for the active panel. For a 128x64 panel this
