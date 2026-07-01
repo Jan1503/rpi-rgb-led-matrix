@@ -11,6 +11,25 @@ public class RGBLedMatrix : IDisposable
     private IntPtr matrix;
     private bool disposedValue = false;
 
+    // Native RGBMatrix::Options keeps the raw string pointers we pass in and
+    // re-reads them on every CreateFrameCanvas()/CreateOffscreenCanvas() (e.g.
+    // panel_type + led_rgb_sequence). We must therefore keep these HGlobal
+    // allocations alive for the whole lifetime of the matrix and only free them
+    // on Dispose -- freeing them right after create is a use-after-free that
+    // corrupts panel_type on the next canvas (crashes 128-row SPWM panels).
+    private IntPtr _hardwareMappingPtr;
+    private IntPtr _ledRgbSequencePtr;
+    private IntPtr _pixelMapperConfigPtr;
+    private IntPtr _panelTypePtr;
+
+    private void FreeOptionStrings()
+    {
+        if (_hardwareMappingPtr != IntPtr.Zero) { Marshal.FreeHGlobal(_hardwareMappingPtr); _hardwareMappingPtr = IntPtr.Zero; }
+        if (_ledRgbSequencePtr != IntPtr.Zero) { Marshal.FreeHGlobal(_ledRgbSequencePtr); _ledRgbSequencePtr = IntPtr.Zero; }
+        if (_pixelMapperConfigPtr != IntPtr.Zero) { Marshal.FreeHGlobal(_pixelMapperConfigPtr); _pixelMapperConfigPtr = IntPtr.Zero; }
+        if (_panelTypePtr != IntPtr.Zero) { Marshal.FreeHGlobal(_panelTypePtr); _panelTypePtr = IntPtr.Zero; }
+    }
+
     /// <summary>
     /// Initializes a new matrix.
     /// </summary>
@@ -55,16 +74,24 @@ public class RGBLedMatrix : IDisposable
             argv[argIndex++] = "--led-no-drop-privs";
             Array.Copy(args, 1, argv, argIndex, args.Length - 1);
 
+            // Keep the marshalled option strings alive for the matrix lifetime;
+            // native retains these pointers (see field docs above).
+            _hardwareMappingPtr = opt.hardware_mapping;
+            _ledRgbSequencePtr = opt.led_rgb_sequence;
+            _pixelMapperConfigPtr = opt.pixel_mapper_config;
+            _panelTypePtr = opt.panel_type;
+
             matrix = led_matrix_create_from_options_const_argv(ref opt, argv.Length, argv);
             if (matrix == (IntPtr)0)
+            {
+                FreeOptionStrings();
                 throw new ArgumentException("Could not initialize a new matrix");
+            }
         }
-        finally
+        catch
         {
-            if (options.HardwareMapping is not null) Marshal.FreeHGlobal(opt.hardware_mapping);
-            if (options.LedRgbSequence is not null) Marshal.FreeHGlobal(opt.led_rgb_sequence);
-            if (options.PixelMapperConfig is not null) Marshal.FreeHGlobal(opt.pixel_mapper_config);
-            if (options.PanelType is not null) Marshal.FreeHGlobal(opt.panel_type);
+            FreeOptionStrings();
+            throw;
         }
     }
 
@@ -124,6 +151,9 @@ public class RGBLedMatrix : IDisposable
         if (disposedValue) return;
 
         led_matrix_delete(matrix);
+        // Native no longer references the option strings once the matrix is
+        // deleted; release the HGlobal allocations we kept alive for it.
+        FreeOptionStrings();
         disposedValue = true;
     }
 

@@ -242,6 +242,11 @@ void led_canvas_set_pixels(struct LedCanvas *canvas, int x, int y,
   to_canvas(canvas)->SetPixels(x, y, width, height, to_color(colors));
 }
 
+void led_canvas_set_pixels_bgra(struct LedCanvas* canvas, int x, int y,
+  int width, int height, const uint8_t* bgra) {
+  to_canvas(canvas)->SetPixelsBgra(x, y, width, height, bgra);
+}
+
 void led_canvas_clear(struct LedCanvas *canvas) {
   to_canvas(canvas)->Clear();
 }

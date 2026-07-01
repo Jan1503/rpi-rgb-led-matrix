@@ -72,6 +72,10 @@ internal static class Bindings
                                                     ref Color colors);
 
     [DllImport(Lib)]
+    public static extern void led_canvas_set_pixels_bgra(IntPtr canvas, int x, int y, int width, int height,
+        IntPtr bgra);
+
+    [DllImport(Lib)]
     public static extern void led_canvas_clear(IntPtr canvas);
 
     [DllImport(Lib)]
